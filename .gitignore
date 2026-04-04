@@ -84,3 +84,4 @@ demos/minimind/pdf/p22_*.pdf
 demos/minimind/pdf/p23_*.pdf
 demos/minimind/pdf/p24_*.pdf
 demos/minimind/pdf/p25_*.pdf
+demos/**/latex_build/

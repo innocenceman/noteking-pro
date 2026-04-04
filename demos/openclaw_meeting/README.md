@@ -18,6 +18,8 @@
 
 | 文件 | 格式 | 说明 |
 |------|------|------|
+| [OpenClaw圆桌会议_图文讲义.pdf](OpenClaw圆桌会议_图文讲义.pdf) | **LaTeX PDF** | **16页精美图文讲义，含12张视频关键帧，NoteKing 核心特色功能** |
+| [图文讲义.md](图文讲义.md) | Markdown | PDF讲义的Markdown源文件 |
 | [会议纪要.md](会议纪要.md) | Markdown | 完整结构化会议记录，含议程、要点、行动项 |
 | [简报摘要.md](简报摘要.md) | Markdown | 3分钟速读版，TL;DR + 核心要点 |
 | [核心金句与观点.md](核心金句与观点.md) | Markdown | 精彩金句提炼，适合社交媒体分享 |
@@ -25,6 +27,7 @@
 | [学习闪卡.md](学习闪卡.md) | Markdown | 15-20张Q&A学习卡片 |
 | [meeting.srt](meeting.srt) | SRT | 完整中文字幕文件 |
 | [transcript.json](transcript.json) | JSON | 原始ASR转录数据（含时间戳） |
+| [frames/](frames/) | JPG | 12张智能提取的视频关键帧 |
 
 ## 🚀 如何复现
 
@@ -60,6 +63,7 @@ noteking process 你的会议.mp4 \
     │
     ▼
 [MiniMax M2.7] LLM 处理
+    ├── LaTeX PDF 图文讲义（核心功能）
     ├── 会议纪要生成
     ├── 思维导图提炼
     ├── 金句萃取
@@ -67,7 +71,13 @@ noteking process 你的会议.mp4 \
     └── 学习闪卡
     │
     ▼
-多格式输出文件
+[关键帧提取] SceneDetect + 信息密度评分
+    │
+    ▼
+[XeLaTeX] PDF 编译（图文排版）
+    │
+    ▼
+多格式输出文件（PDF + Markdown + SRT + JSON）
 ```
 
 ## 📊 处理统计
@@ -75,8 +85,10 @@ noteking process 你的会议.mp4 \
 - 视频时长：35.7 分钟
 - 转录字数：12,430 字符
 - 字幕条数：1405 条
-- 输出文件：7 个
+- 输出文件：10 个（含PDF讲义 + 12张关键帧）
+- PDF讲义：16 页，1.5 MB
 - LLM模型：MiniMax M2.7
+- PDF引擎：XeLaTeX + tcolorbox
 
 ---
 
