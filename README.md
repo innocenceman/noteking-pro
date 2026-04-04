@@ -11,6 +11,25 @@
 
 ---
 
+## 🔀 与 NoteKing（原版）的对比
+
+> NoteKing Pro 是 [NoteKing](https://github.com/bcefghj/noteking) 的全功能升级版，在完整保留原版在线视频处理能力的基础上，新增了**本地录音/会议处理**能力。
+
+| 功能 | [NoteKing（原版）](https://github.com/bcefghj/noteking) | NoteKing Pro（本仓库） |
+|------|------|------|
+| 在线视频转笔记（B站/YouTube 等） | ✅ | ✅ |
+| LaTeX PDF 图文讲义 | ✅ | ✅ 升级版（含页眉页脚品牌） |
+| **本地录音/视频处理** | ❌ | ✅ |
+| **说话人分离（多人会议）** | ❌ | ✅ pyannote-audio |
+| **降噪增强** | ❌ | ✅ 三级降噪 |
+| **多文件合并** | ❌ | ✅ |
+| 输出模板数量 | 13 种 | 23 种 |
+| 典型案例 | MiniMind 课程（B站 26 集） | OpenClaw 圆桌会议（35 分钟） |
+
+**如果你只需要处理在线视频 →** 可以用轻量级的 [NoteKing 原版](https://github.com/bcefghj/noteking)
+
+---
+
 ## 🎬 真实案例：35分钟会议视频 → 10种输出文档
 
 > 以下全部为 NoteKing Pro **自动生成**的真实结果，源文件在 [`demos/openclaw_meeting/`](demos/openclaw_meeting/)
@@ -435,7 +454,8 @@ MIT License - 开源免费，随意使用
 
 | 平台 | 链接 |
 |------|------|
-| 🔗 GitHub | [github.com/bcefghj/noteking-pro](https://github.com/bcefghj/noteking-pro) |
+| 🔗 GitHub（Pro） | [github.com/bcefghj/noteking-pro](https://github.com/bcefghj/noteking-pro) |
+| 🔗 GitHub（原版） | [github.com/bcefghj/noteking](https://github.com/bcefghj/noteking) |
 | 📕 小红书 | [@bcefghj](https://www.xiaohongshu.com/user/profile/bcefghj) |
 
 > 觉得好用请给个 ⭐ Star，让更多人发现这个工具！
