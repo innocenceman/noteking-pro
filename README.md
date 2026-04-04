@@ -4,8 +4,193 @@
 
 **支持 30+ 平台视频 | 本地录音/视频上传 | 说话人分离 | 降噪增强 | 23 种输出模板 | 中英混合**
 
-[![GitHub stars](https://img.shields.io/github/stars/bcefghj/noteking?style=social)](https://github.com/bcefghj/noteking)
+[![GitHub stars](https://img.shields.io/github/stars/bcefghj/noteking-pro?style=social)](https://github.com/bcefghj/noteking-pro)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+> 🔗 **GitHub**: [github.com/bcefghj/noteking-pro](https://github.com/bcefghj/noteking-pro) · **小红书**: [@bcefghj](https://www.xiaohongshu.com/user/profile/bcefghj)
+
+---
+
+## 🎬 真实案例：35分钟会议视频 → 10种输出文档
+
+> 以下全部为 NoteKing Pro **自动生成**的真实结果，源文件在 [`demos/openclaw_meeting/`](demos/openclaw_meeting/)
+>
+> 原始视频：[OpenClaw与AI开源圆桌会议 · 杨植麟（月之暗面）主持](https://www.bilibili.com/video/BV1GX9pB9E6N/) — Bilibili · 35分钟
+
+### 📄 核心功能：LaTeX PDF 精美图文讲义
+
+**16页图文并茂的专业讲义，含12张自动提取的视频关键帧，XeLaTeX 专业排版：**
+
+| 预览页 | 预览页 |
+|--------|--------|
+| ![封面页](demos/openclaw_meeting/preview/page_01.png) | ![目录+正文](demos/openclaw_meeting/preview/page_02.png) |
+| *封面：标题、日期、GitHub/小红书信息* | *目录页：自动生成章节导航* |
+| ![图文正文1](demos/openclaw_meeting/preview/page_03.png) | ![图文正文2](demos/openclaw_meeting/preview/page_04.png) |
+| *正文：关键帧截图 + 重点框 + 结构化文字* | *正文：表格对比 + 引用 + 知识补充框* |
+
+📥 **[下载完整 PDF（1.5MB，16页）](demos/openclaw_meeting/OpenClaw圆桌会议_图文讲义.pdf)**
+
+**PDF 每页包含：**
+- 🖼️ 视频关键帧截图（智能评分提取，插入对应知识点旁）
+- 🟡 重点提示框 / 🔵 知识补充框 / 🔴 注意事项框
+- 页眉：文章标题 + `github.com/bcefghj/noteking-pro`
+- 页脚：小红书 `@bcefghj` + 页码 + NoteKing Pro
+
+---
+
+### 📋 会议纪要（结构化 Markdown）
+
+> 完整文件：[demos/openclaw_meeting/会议纪要.md](demos/openclaw_meeting/会议纪要.md)
+
+<details>
+<summary>📖 展开查看（节选）</summary>
+
+```
+# OpenClaw与AI开源圆桌会议纪要
+
+## 一、会议基本信息
+| 项目 | 内容 |
+|------|------|
+| 主持人 | 杨植麟（月之暗面/Kimi创始人）|
+| 参会人员 | 张宏、张鹏（智谱）、利算科技代表、小米代表、黄超（Nanobot）等 |
+| 讨论主题 | OpenClaw平台与AI开源生态讨论 |
+
+## 二、主要议题
+1. OpenClaw使用体验与价值探讨
+2. OpenClaw与Agent框架的革命性意义
+3. 智谱 Grok5 Turbo 模型发布
+4. 推理时代的基础设施挑战
+5. Agent技术发展方向（Planning / Memory / Tool Use）
+6. 未来12个月展望
+
+## 三、行动项
+- [ ] 探索 Agent 自进化能力落地路径
+- [ ] 打造面向 Agent 原生的基础设施生态
+- [ ] 推动 MCP 协议标准化与 Skill 质量提升
+```
+
+</details>
+
+---
+
+### 📊 简报摘要（3分钟速读版）
+
+> 完整文件：[demos/openclaw_meeting/简报摘要.md](demos/openclaw_meeting/简报摘要.md)
+
+**TL;DR**：OpenClaw 引领 AI Agent 开源生态爆发，业界共识从"聊天工具"转向"干活助手"，但推理算力瓶颈与模型自主进化能力成为下一阶段核心挑战。
+
+**核心要点：**
+1. **OpenClaw 重新定义 AI 交互范式** — 从"聊天"升级为"干活"，IM 软件嵌入方式带来"活人感"
+2. **推理算力需求指数爆发** — Token 用量每两周翻倍，已增长 10 倍
+3. **Agent 框架推动模型能力两极分化** — 开源框架将国内模型"下限"提升至接近顶级模型
+4. **长上下文与自主进化成竞争焦点** — 72步长程规划、上下文压缩是关键
+5. **生态共建与商业可持续是长期命题** — 需回归合理商业价值
+
+---
+
+### 💬 核心金句提炼
+
+> 完整文件：[demos/openclaw_meeting/核心金句与观点.md](demos/openclaw_meeting/核心金句与观点.md)
+
+> **"普通人也可以比较方便的来使用顶尖的这些模型的能力。"** — 张宏
+
+> **"模型从最开始在按照Token去聊天，到现在能够变成一个Agent，变成一个龙虾，能够帮你去完成任务——它对于我们整个AI的想象力空间已经做了一个很大的提升。"**
+
+> **"未来可能大部分的软件都不一定会面向人了……可能面向Agent的原生的去使用的。"** — 黄超
+
+> **"我们想做的就是 AI Made in China——把我们中国的这些能源上的优势，通过这些推理工厂，可持续的再输出到全球。"**
+
+---
+
+### 🗺️ 思维导图（Mermaid，GitHub 直接渲染）
+
+> 完整文件：[demos/openclaw_meeting/思维导图.md](demos/openclaw_meeting/思维导图.md)
+
+```mermaid
+mindmap
+    root((OpenClaw圆桌会议))
+        OpenClaw平台价值
+            脚手架作用
+                降低AI使用门槛
+                普通人也能用顶尖模型
+            交互模式创新
+                IM软件形式
+                更强的活人感
+            开源意义
+                社区深度参与
+        从聊天到Agent进化
+            模型能力升级
+                长程任务规划
+                上下文压缩处理
+            系统要求提高
+                Token消耗量剧增
+        技术基础设施挑战
+            算力瓶颈
+                需求爆发式增长
+            推理时代特征
+                多芯片异构计算
+        Agent技术方向
+            Planning规划能力
+            Memory记忆机制
+            Tool Use工具使用
+            Multi-Agent协作
+        未来展望
+            自进化
+            生态建设
+            AI Made in China
+```
+
+---
+
+### 🃏 学习闪卡（Q&A 格式）
+
+> 完整文件：[demos/openclaw_meeting/学习闪卡.md](demos/openclaw_meeting/学习闪卡.md)
+
+**Q: OpenClaw 是什么？它在 AI 生态中的定位？**
+> A: OpenClaw 是一个开源 Agent 框架，提供"脚手架"让普通人便捷使用顶尖大模型能力，将 AI 从程序员专利变成大众工具。
+
+**Q: 为什么 OpenClaw 会在社区爆火？**
+> A: ① IM 软件交互方式带来"活人感"；② 证明了简单 Agent loop 的可行性；③ 开源激发了社区创新活力。
+
+**Q: AI 开源生态目前面临哪些主要挑战？**
+> A: Token 用量爆发（每两周翻倍）、算力资源整合、基础设施适配 Agent 时代需求。
+
+---
+
+### 🎤 SRT 字幕文件（1405 条）
+
+> 完整文件：[demos/openclaw_meeting/meeting.srt](demos/openclaw_meeting/meeting.srt)
+
+```srt
+1
+00:00:00,000 --> 00:00:03,720
+我們今天邀請到各位重磅的嘉賓
+
+2
+00:00:03,720 --> 00:00:07,160
+然後也覆蓋了其實不同的層面
+
+3
+00:00:07,160 --> 00:00:10,320
+從模型層到底層的算力層到上面的Agent層
+```
+
+---
+
+### 📊 处理统计
+
+| 项目 | 数值 |
+|------|------|
+| 视频时长 | 35.7 分钟 |
+| ASR 引擎 | faster-whisper (base) |
+| 字幕条数 | 1,405 条 |
+| 转录字数 | 12,430 字符 |
+| LLM | MiniMax M2.7 (200K context) |
+| PDF 页数 | 16 页 |
+| PDF 大小 | 1.5 MB |
+| 关键帧 | 12 张（智能评分提取） |
+| 输出文件 | 10 个 |
+| 总处理时间 | ~10 分钟 |
 
 ---
 
@@ -32,8 +217,8 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/bcefghj/noteking.git
-cd noteking
+git clone https://github.com/bcefghj/noteking-pro.git
+cd noteking-pro
 
 # 安装 (基础)
 pip install -e .
@@ -243,3 +428,14 @@ MIT License - 开源免费，随意使用
 核心技术栈: OpenAI Whisper, FunASR, pyannote-audio, faster-whisper, FFmpeg, yt-dlp, OpenAI SDK
 
 灵感来源: 钉钉AI听记, Otter.ai, NotebookLM, Meetily, Open Notebook, BibiGPT
+
+---
+
+## 📣 关注我们
+
+| 平台 | 链接 |
+|------|------|
+| 🔗 GitHub | [github.com/bcefghj/noteking-pro](https://github.com/bcefghj/noteking-pro) |
+| 📕 小红书 | [@bcefghj](https://www.xiaohongshu.com/user/profile/bcefghj) |
+
+> 觉得好用请给个 ⭐ Star，让更多人发现这个工具！
