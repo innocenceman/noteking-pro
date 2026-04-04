@@ -32,7 +32,10 @@ noteking_output/
 *.wav
 *.mp3
 *.mp4
-*.srt
+# Keep demo SRT files but exclude audio/video
+demos/**/*.wav
+demos/**/*.mp3
+demos/**/*.mp4
 
 # Node
 node_modules/
