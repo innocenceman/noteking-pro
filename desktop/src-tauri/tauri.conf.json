@@ -1,0 +1,39 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicegui/nicegui/main/tauri.conf.schema.json",
+  "productName": "NoteKing Pro",
+  "version": "2.0.0",
+  "identifier": "com.noteking.app",
+  "build": {
+    "frontendDist": "../src",
+    "devUrl": "http://localhost:3000",
+    "beforeDevCommand": "",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "title": "NoteKing Pro - 全网最强视频/录音处理工具",
+    "windows": [
+      {
+        "title": "NoteKing Pro",
+        "width": 1280,
+        "height": 860,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

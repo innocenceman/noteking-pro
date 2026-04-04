@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - NOTEKING_LLM_API_KEY=${NOTEKING_LLM_API_KEY}
+      - NOTEKING_LLM_BASE_URL=${NOTEKING_LLM_BASE_URL:-}
+      - NOTEKING_LLM_MODEL=${NOTEKING_LLM_MODEL:-gpt-4o-mini}
+      - NOTEKING_PROXY=${NOTEKING_PROXY:-}
+      - BILIBILI_SESSDATA=${BILIBILI_SESSDATA:-}
+      - HF_TOKEN=${HF_TOKEN:-}
+    volumes:
+      - noteking_output:/app/noteking_output
+      - noteking_cache:/root/.noteking
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  noteking_output:
+  noteking_cache:

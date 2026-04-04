@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "noteking"
+version = "2.0.0"
+description = "The ultimate video/recording to learning notes tool. Supports 30+ platforms, local video/audio files, meeting recordings with speaker diarization, noise reduction, and 23 output templates including LaTeX PDF."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+authors = [{name = "NoteKing Contributors"}]
+keywords = ["video", "notes", "summary", "meeting", "recording", "transcription", "diarization", "bilibili", "youtube", "ai", "mcp"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Education",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+dependencies = [
+    "yt-dlp>=2024.0",
+    "youtube-transcript-api>=1.0.0",
+    "openai>=1.0.0",
+    "httpx>=0.27.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "rich>=13.0",
+    "click>=8.0",
+    "aiofiles>=24.0",
+    "pysrt>=1.1.2",
+]
+
+[project.optional-dependencies]
+asr = ["faster-whisper>=1.0.0"]
+funasr = ["funasr>=1.0.0", "modelscope"]
+meeting = [
+    "noisereduce>=3.0.0",
+    "numpy>=1.24.0",
+]
+diarize = ["pyannote.audio>=3.1.0", "torch>=2.0.0"]
+api = ["fastapi>=0.115.0", "uvicorn[standard]>=0.30.0", "websockets>=13.0"]
+frames = ["scenedetect[opencv]>=0.6"]
+pdf = ["weasyprint>=62.0"]
+all = ["noteking[asr,funasr,meeting,diarize,api,frames,pdf]"]
+
+[project.scripts]
+noteking = "cli.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/bcefghj/noteking"
+Repository = "https://github.com/bcefghj/noteking"
+Documentation = "https://github.com/bcefghj/noteking/tree/main/docs"
+Issues = "https://github.com/bcefghj/noteking/issues"
+
+[tool.setuptools.packages.find]
+include = ["core*", "api*", "cli*"]

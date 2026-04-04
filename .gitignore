@@ -1,0 +1,83 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# NoteKing data
+.noteking/
+noteking_output/
+*.wav
+*.mp3
+*.mp4
+*.srt
+
+# Node
+node_modules/
+.next/
+out/
+
+# Rust/Tauri
+target/
+
+# MCP build
+mcp/dist/
+
+# Docker
+docker-compose.override.yml
+
+# Large files
+demos/minimind/videos/
+demos/minimind/latex_build/
+*.aux
+*.log
+*.toc
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+demos/minimind/pdf/MiniMind_全集_图文讲义.pdf
+demos/minimind/pdf/MiniMind_全26集_图文讲义.pdf
+demos/minimind/pdf/p02_*.pdf
+demos/minimind/pdf/p03_*.pdf
+demos/minimind/pdf/p05_*.pdf
+demos/minimind/pdf/p06_*.pdf
+demos/minimind/pdf/p08_*.pdf
+demos/minimind/pdf/p09_*.pdf
+demos/minimind/pdf/p10_*.pdf
+demos/minimind/pdf/p11_*.pdf
+demos/minimind/pdf/p12_*.pdf
+demos/minimind/pdf/p13_*.pdf
+demos/minimind/pdf/p14_*.pdf
+demos/minimind/pdf/p15_*.pdf
+demos/minimind/pdf/p16_*.pdf
+demos/minimind/pdf/p18_*.pdf
+demos/minimind/pdf/p19_*.pdf
+demos/minimind/pdf/p20_*.pdf
+demos/minimind/pdf/p21_*.pdf
+demos/minimind/pdf/p22_*.pdf
+demos/minimind/pdf/p23_*.pdf
+demos/minimind/pdf/p24_*.pdf
+demos/minimind/pdf/p25_*.pdf

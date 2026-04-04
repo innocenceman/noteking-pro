@@ -1,0 +1,14 @@
+FROM node:20-slim
+
+WORKDIR /app
+
+COPY web/package.json ./
+RUN npm install --production=false
+
+COPY web/ ./
+
+RUN npm run build 2>/dev/null || true
+
+EXPOSE 3000
+
+CMD ["npm", "run", "dev"]

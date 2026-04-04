@@ -1,0 +1,23 @@
+{
+  "name": "@noteking/mcp-server",
+  "version": "0.1.0",
+  "description": "NoteKing MCP Server - Video/blog to notes with 13 templates, 30+ platforms",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "keywords": ["mcp", "video", "notes", "bilibili", "youtube", "summary"],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "tsx": "^4.16.0",
+    "@types/node": "^22.0.0"
+  }
+}
