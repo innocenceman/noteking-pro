@@ -44,7 +44,14 @@ class LaTeXPDFTemplate(BaseTemplate):
 7. 重要概念用 \\textbf{{}} 强调
 8. 每个主要 section 结尾加 \\subsection{{本章小结}}
 9. 文档最后加 \\section{{总结与延伸}}
-10. 不使用外部图片引用
+
+⚠️ 严格禁止:
+- 绝对不要使用 \\includegraphics 命令
+- 绝对不要使用 figure 环境 (\\begin{{figure}})
+- 绝对不要使用 graphicx 宏包
+- 绝对不要生成任何"图 1"、"图 2"、"关键帧"、"截图"等虚假图片引用或描述
+- 不要出现任何形式的图片占位符或图片说明文字
+- 这是纯文本讲义，只使用文字、公式、列表、表格和代码环境
 
 LaTeX 模板头部:
 \\documentclass[12pt,a4paper]{{ctexart}}
@@ -55,4 +62,4 @@ LaTeX 模板头部:
 \\author{{笔记整理自 {ctx.meta.uploader} 的视频}}
 \\date{{}}
 
-请直接输出完整的 .tex 文档:"""
+请直接输出完整的 .tex 文档（纯文字，不含任何图片）:"""
