@@ -42,6 +42,10 @@ class VideoMeta:
 BILIBILI_COOKIES_FILE = Path("/app/bilibili_cookies.txt")
 
 
+def _text_or_empty(value: object) -> str:
+    return value if isinstance(value, str) else ""
+
+
 def _base_cmd(config: AppConfig) -> list[str]:
     import os
     from urllib.parse import unquote
@@ -97,17 +101,17 @@ def get_video_info(url: str, config: AppConfig) -> VideoMeta:
                 continue
 
     return VideoMeta(
-        title=first.get("title", ""),
-        description=first.get("description", ""),
+        title=_text_or_empty(first.get("title")),
+        description=_text_or_empty(first.get("description")),
         duration=first.get("duration", 0) or 0,
-        uploader=first.get("uploader", ""),
-        upload_date=first.get("upload_date", ""),
-        thumbnail=first.get("thumbnail", ""),
-        webpage_url=first.get("webpage_url", url),
+        uploader=_text_or_empty(first.get("uploader")),
+        upload_date=_text_or_empty(first.get("upload_date")),
+        thumbnail=_text_or_empty(first.get("thumbnail")),
+        webpage_url=_text_or_empty(first.get("webpage_url")) or url,
         chapters=first.get("chapters") or [],
         subtitles=first.get("subtitles") or {},
         entries=entries if len(entries) > 1 else [],
-        extra={"id": first.get("id", "")},
+        extra={"id": _text_or_empty(first.get("id"))},
     )
 
 
@@ -115,7 +119,7 @@ def download_subtitles(
     url: str,
     output_dir: Path,
     config: AppConfig,
-    langs: str = "zh-Hans,zh-CN,zh,ai-zh,en",
+    langs: str = "zh-Hans,zh-CN,zh-TW,zh-Hant,zh-Hant-zh-TW,zh-Hans-zh-TW,zh,ai-zh,en",
 ) -> list[Path]:
     """Download subtitles using yt-dlp."""
     output_dir.mkdir(parents=True, exist_ok=True)

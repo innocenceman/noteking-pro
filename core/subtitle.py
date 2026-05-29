@@ -133,7 +133,20 @@ def _try_youtube_transcript_api(
 
         vid = parsed.video_id
         ytt = YouTubeTranscriptApi()
-        fetched = ytt.fetch(vid, languages=["zh-Hans", "zh-CN", "zh", "en"], **kwargs)
+        fetched = ytt.fetch(
+            vid,
+            languages=[
+                "zh-Hans",
+                "zh-CN",
+                "zh-TW",
+                "zh-Hant",
+                "zh-Hant-zh-TW",
+                "zh-Hans-zh-TW",
+                "zh",
+                "en",
+            ],
+            **kwargs,
+        )
         segments = [
             SubtitleSegment(
                 start=s.start,
