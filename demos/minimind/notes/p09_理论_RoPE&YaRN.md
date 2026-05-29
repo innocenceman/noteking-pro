@@ -1,526 +1,871 @@
 # 第9集: 理论：RoPE&YaRN
 
-# 第九讲：旋转位置编码 RoPE 与外推技术 YaRN
+## 第9讲：理论：RoPE & YaRN
 
-## 讲义概述
+### 本集主题
 
-本讲将深入探讨现代大语言模型中两项关键技术：**旋转位置编码（Rotary Position Embedding, RoPE）** 和 **YaRN（Yet another RoPE extensioN）**。我们将从头推导 RoPE 的数学原理，解释为何它能有效解决传统位置编码的问题，并详细讲解如何通过 YaRN 技术实现上下文窗口的扩展外推。
+本节课围绕大模型中的位置编码展开，重点讲解：
 
----
-
-## 1. 位置编码的背景与动机
-
-### 1.1 Transformer 中的位置问题
-
-{KNOWLEDGE}背景知识{/KNOWLEDGE}
-
-在原始的 Transformer 架构中，注意力机制（Self-Attention）具有**置换不变性**——这意味着输入序列 `[A, B, C]` 和 `[C, B, A]` 经过注意力计算后会产生相同的输出，因为模型无法区分 token 之间的相对位置关系。
+- 为什么 Transformer 需要位置编码
+- RoPE，Rotary Position Embedding，旋转位置编码的核心思想
+- RoPE 如何把绝对位置编码转化为相对位置信息
+- RoPE 在注意力计算中的数学形式
+- 长上下文外推时 RoPE 的问题
+- YaRN 如何改造 RoPE，使模型支持更长上下文
 
 {IMAGE:1}
 
-为了解决这个问题，Vaswani 等人在《Attention Is All You Need》中提出了**绝对位置编码（Absolute Position Encoding, APE）**。
+{IMPORTANT}核心概念：Transformer 的自注意力机制本身对 token 顺序不敏感，因此必须引入位置编码，让模型知道“谁在前、谁在后、相隔多远”。RoPE 的关键做法不是把位置向量直接加到 embedding 上，而是对 Query 和 Key 做与位置相关的旋转变换。{/IMPORTANT}
 
-### 1.2 传统位置编码的局限性
+本节小结：本讲从位置编码的必要性出发，逐步过渡到 RoPE 的旋转建模方式，并进一步讨论长上下文外推中的 YaRN 方法。
+
+---
+
+## 一、为什么需要位置编码
+
+Transformer 的核心结构是自注意力机制。对于输入序列：
+
+$$
+x_1, x_2, \dots, x_n
+$$
+
+自注意力主要通过 Query、Key、Value 计算：
+
+$$
+Q = XW_Q,\quad K = XW_K,\quad V = XW_V
+$$
+
+注意力分数为：
+
+$$
+\text{Attention}(Q,K,V)=\text{softmax}\left(\frac{QK^T}{\sqrt{d}}\right)V
+$$
+
+从公式上看，$QK^T$ 只关心 token 表示之间的相似度，并不天然包含顺序信息。
+
+例如：
+
+- “我 喜欢 你”
+- “你 喜欢 我”
+
+如果没有位置编码，模型看到的只是三个 token 的集合，很难区分语义差异。
 
 {IMAGE:2}
 
-原始 Transformer 使用正弦/余弦函数生成位置编码：
+{KNOWLEDGE}背景知识：自注意力机制具有置换不变性。也就是说，如果不加入位置信息，调换输入 token 的顺序，模型内部的注意力计算结构并不会自动知道顺序发生了变化。{/KNOWLEDGE}
 
-$$PE_{(pos, 2i)} = \sin\left(\frac{pos}{10000^{2i/d_{model}}}\right)$$
+常见位置编码方式包括：
 
-$$PE_{(pos, 2i+1)} = \cos\left(\frac{pos}{10000^{2i/d_{model}}}\right)$$
+1. 绝对位置编码
+2. 相对位置编码
+3. 旋转位置编码 RoPE
+4. 长上下文扩展方法，如 NTK scaling、YaRN 等
 
-{WARNING}易错点{/WARNING}
-
-这种编码方式存在几个关键问题：
-
-1. **长度外推性差**：训练时序列长度固定，推理时若超出训练长度，位置编码无法泛化
-2. **计算效率低**：需要将位置编码与 token embedding 相加，增加参数量
-3. **相对位置信息缺失**：绝对位置编码难以直接表达 token 之间的相对距离
-
-{KNOWLEDGE}背景知识{/KNOWLEDGE}
-
-后续研究提出了**相对位置编码（Relative Position Encoding, RPE）**，如 Shaw 等人的工作，通过引入相对位置偏移量来改善这一问题。然而，这些方法仍然存在计算复杂度和表达能力上的局限。
+本节小结：Transformer 必须引入位置信息，否则它只能建模 token 之间的内容相关性，无法可靠理解顺序结构。
 
 ---
 
-## 2. 旋转位置编码 RoPE
+## 二、绝对位置编码与相对位置编码
 
-### 2.1 核心思想
+### 1. 绝对位置编码
 
-{IMPORTANT}核心概念{/IMPORTANT}
+早期 Transformer 使用正弦余弦位置编码：
 
-**RoPE 的核心思想**：将位置信息编码为旋转矩阵，通过**旋转 query 和 key 向量**来实现位置感知，而不改变注意力分数的直接计算方式。
+$$
+PE_{pos,2i} = \sin\left(\frac{pos}{10000^{2i/d}}\right)
+$$
 
-{IMAGE:3}
+$$
+PE_{pos,2i+1} = \cos\left(\frac{pos}{10000^{2i/d}}\right)
+$$
 
-设 query 向量 $\mathbf{q}_m$ 和 key 向量 $\mathbf{k}_n$ 分别位于位置 $m$ 和 $n$，RoPE 的目标是设计一个旋转函数 $R(\cdot)$，使得：
+其中：
 
-$$\text{Attention}(\mathbf{q}_m, \mathbf{k}_n) = \langle R(\mathbf{q}_m, m), R(\mathbf{k}_n, n) \rangle = \langle \mathbf{q}_m, \mathbf{k}_n \rangle_{\text{relative}}$$
+- $pos$ 表示 token 的位置
+- $i$ 表示维度索引
+- $d$ 表示 hidden size
 
-即注意力分数只依赖于 **相对位置** $m-n$。
+然后将位置编码加到 token embedding 上：
 
-### 2.2 二维旋转的数学推导
+$$
+h_{pos}=x_{pos}+PE_{pos}
+$$
+
+这种方法简单直接，但存在一个问题：位置编码是“加进去”的，模型需要自己从表示中解读位置信息。
+
+### 2. 相对位置编码
+
+相对位置编码更关心两个 token 之间的距离：
+
+$$
+i-j
+$$
+
+在语言建模中，相对距离往往比绝对位置更重要。
+
+比如在句子中，“主语”和“谓语”的距离可能比“它们分别处在第几个 token”更有意义。
 
 {IMAGE:4}
 
-让我们从最简单的二维情况开始推导。
+{IMPORTANT}核心概念：RoPE 的优势在于，它使用绝对位置构造旋转矩阵，但在 Query 和 Key 的点积中自然体现相对位置差。也就是说，RoPE 形式上使用绝对位置，效果上具备相对位置编码能力。{/IMPORTANT}
 
-对于二维向量 $\mathbf{q} = [q_0, q_1]^T$，我们希望应用旋转矩阵：
-
-$$R(\theta) = \begin{bmatrix} \cos\theta & -\sin\theta \\ \sin\theta & \cos\theta \end{bmatrix}$$
-
-应用旋转后：
-$$\mathbf{q}' = R(\theta) \cdot \mathbf{q}$$
-
-两个旋转后向量的内积为：
-
-$$\langle R(\theta_m)\mathbf{q}, R(\theta_n)\mathbf{k} \rangle = \langle \mathbf{q}, \mathbf{k} \rangle \cos(\theta_m - \theta_n) + \underbrace{(\cdots)}_{\text{正交分量}}$$
-
-{IMAGE:5}
-
-{IMPORTANT}核心概念{/IMPORTANT}
-
-**关键发现**：旋转后的内积结果**只依赖于相对角度差** $\theta_m - \theta_n$！这正是我们需要的性质。
-
-### 2.3 多维扩展
-
-{IMAGE:6}
-
-对于 $d$ 维向量，我们将其分成 $d/2$ 个**二维子平面**，每个子平面应用不同的旋转角度：
-
-$$\mathbf{q}'_m = \begin{bmatrix} q_0 \cos(m\theta_0) - q_1 \sin(m\theta_0) \\ q_0 \sin(m\theta_0) + q_1 \cos(m\theta_0) \\ q_2 \cos(m\theta_1) - q_3 \sin(m\theta_1) \\ q_2 \sin(m\theta_1) + q_3 \cos(m\theta_1) \\ \vdots \end{bmatrix}$$
-
-其中旋转频率为：
-
-$$\theta_i = 10000^{-2i/d}, \quad i = 0, 1, 2, \ldots, d/2 - 1$$
-
-### 2.4 RoPE 的矩阵形式
-
-{IMAGE:7}
-
-RoPE 可以等效地表示为与位置编码的**逐元素乘法**：
-
-$$\mathbf{q}'_m = \mathbf{q}_m \odot \begin{bmatrix} \cos(m\theta_0) \\ \cos(m\theta_0) \\ \cos(m\theta_1) \\ \cos(m\theta_1) \\ \vdots \end{bmatrix} + \mathbf{q}_m^{\text{rotated}} \odot \begin{bmatrix} -\sin(m\theta_0) \\ \sin(m\theta_0) \\ -\sin(m\theta_1) \\ \sin(m\theta_1) \\ \vdots \end{bmatrix}$$
-
-{IMAGE:8}
-
-{KNOWLEDGE}背景知识{/KNOWLEDGE}
-
-这种表示形式更加高效，因为：
-- 不需要显式构造大型旋转矩阵
-- 可以通过简单的逐元素运算实现
-- 与 Flash Attention 等高效注意力机制兼容
-
-### 2.5 RoPE 与其他位置编码的对比
-
-{IMAGE:9}
-
-| 特性 | 绝对位置编码 | 相对位置编码 | RoPE |
-|------|------------|------------|------|
-| 位置信息编码方式 | 与 embedding 相加 | 融入注意力计算 | 旋转 query/key |
-| 相对位置表达 | 隐式 | 显式 | 显式（旋转不变性） |
-| 计算效率 | 较低 | 中等 | 高（线性运算） |
-| 外推能力 | 差 | 一般 | 较好 |
-| 实现复杂度 | 低 | 高 | 中等 |
+本节小结：绝对位置编码容易实现，但泛化到长序列时不够自然；相对位置编码更符合语言结构。RoPE 的价值在于把二者结合起来。
 
 ---
 
-## 3. RoPE 的实现
+## 三、RoPE 的直观理解：向量旋转
 
-### 3.1 基础 RoPE 实现
+### 1. 二维旋转矩阵
 
-{IMAGE:10}
+二维平面中，一个向量 $(x, y)$ 旋转角度 $\theta$ 后得到：
+
+$$
+\begin{bmatrix}
+x' \\
+y'
+\end{bmatrix}
+=
+\begin{bmatrix}
+\cos\theta & -\sin\theta \\
+\sin\theta & \cos\theta
+\end{bmatrix}
+\begin{bmatrix}
+x \\
+y
+\end{bmatrix}
+$$
+
+记为：
+
+$$
+R_\theta x
+$$
+
+RoPE 的基本思想就是：把 embedding 的相邻两个维度看成一个二维平面，然后按照 token 的位置，对它做旋转。
+
+{IMAGE:5}
+
+对于第 $m$ 个位置，其旋转角度不是固定的，而是：
+
+$$
+m\theta_i
+$$
+
+其中 $\theta_i$ 是第 $i$ 个二维子空间对应的频率。
+
+### 2. 多维向量中的旋转
+
+假设 hidden dimension 为 $d$，RoPE 会把向量分成 $d/2$ 对：
+
+$$
+(x_0,x_1), (x_2,x_3), \dots, (x_{d-2},x_{d-1})
+$$
+
+每一对使用不同频率旋转：
+
+$$
+\theta_i = 10000^{-2i/d}
+$$
+
+第 $m$ 个位置上的旋转为：
+
+$$
+R_{\theta,m}
+$$
+
+也就是每一组二维向量旋转 $m\theta_i$。
+
+{IMAGE:6}
+
+{KNOWLEDGE}背景知识：低维频率变化慢，适合表示长距离关系；高维频率变化快，适合表示短距离、局部位置信息。这与正弦位置编码的设计思想一致。{/KNOWLEDGE}
+
+本节小结：RoPE 将向量的相邻维度两两配对，在每个二维平面内根据位置进行旋转，从而把位置信息编码进 Query 和 Key。
+
+---
+
+## 四、RoPE 的数学推导
+
+### 1. 对 Query 和 Key 加入旋转
+
+设第 $m$ 个位置的 Query 为 $q_m$，第 $n$ 个位置的 Key 为 $k_n$。
+
+RoPE 不直接改 token embedding，而是对 Query 和 Key 做旋转：
+
+$$
+\tilde q_m = R_m q_m
+$$
+
+$$
+\tilde k_n = R_n k_n
+$$
+
+然后注意力分数变成：
+
+$$
+\tilde q_m^T \tilde k_n
+=
+(R_m q_m)^T(R_n k_n)
+$$
+
+展开：
+
+$$
+= q_m^T R_m^T R_n k_n
+$$
+
+由于旋转矩阵满足：
+
+$$
+R_m^T = R_{-m}
+$$
+
+所以：
+
+$$
+R_m^T R_n = R_{n-m}
+$$
+
+因此：
+
+$$
+\tilde q_m^T \tilde k_n = q_m^T R_{n-m} k_n
+$$
+
+{IMAGE:7}
+
+{IMPORTANT}核心概念：RoPE 的注意力分数只依赖于位置差 $n-m$，因此天然具备相对位置编码的性质。{/IMPORTANT}
+
+### 2. 为什么只旋转 Q 和 K，不旋转 V
+
+注意力权重由 $QK^T$ 决定：
+
+$$
+\alpha_{mn}=\text{softmax}\left(\frac{q_m^T k_n}{\sqrt d}\right)
+$$
+
+位置关系主要影响“关注谁”，也就是注意力分数。
+
+Value 主要承载被聚合的信息内容，因此通常不需要加入旋转位置编码。
+
+{IMAGE:8}
+
+{WARNING}易错点：RoPE 不是给输入 embedding 加一个位置向量，而是在注意力层中对 Query 和 Key 做旋转。它影响的是注意力分数，而不是直接改写 token 的原始语义表示。{/WARNING}
+
+本节小结：RoPE 的关键数学性质是旋转矩阵相乘后会变成相对角度差，因此点积中自然包含相对位置信息。
+
+---
+
+## 五、RoPE 的 PyTorch 实现思路
+
+### 1. 构造频率
+
+常见实现中会先构造 inverse frequency：
+
+$$
+\text{inv\_freq}_i = \frac{1}{\theta^{2i/d}}
+$$
+
+通常 $\theta=10000$。
 
 ```python
 import torch
-import math
 
-def precompute_freqs_cis(dim: int, seq_len: int, theta: float = 10000.0):
+def build_inv_freq(dim, base=10000.0):
     """
-    预计算旋转位置编码的频率矩阵
-    
-    Args:
-        dim: 嵌入维度
-        seq_len: 序列长度
-        theta: 基础频率参数
-    
-    Returns:
-        freqs_cis: 复数形式的频率矩阵, shape = [seq_len, dim//2]
+    dim: head_dim
+    base: RoPE 频率基数，常用 10000
     """
-    # 计算各层的旋转频率
-    # theta_i = theta ** (-2i/dim) for i in [0, 1, ..., dim//2-1]
-    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
-    
-    # 生成位置索引
-    positions = torch.arange(seq_len)
-    
-    # 计算每个位置的相位角: theta_i * pos
-    # 外积得到 [seq_len, dim//2] 的角度矩阵
-    angles = positions[:, None] * freqs[None, :]
-    
-    # 转换为复数形式: cos + i*sin
-    freqs_cis = torch.polar(torch.ones_like(angles), angles)
-    
-    return freqs_cis
-
-def apply_rotary_emb(q: torch.Tensor, k: torch.Tensor, 
-                     freqs_cis: torch.Tensor):
-    """
-    应用旋转位置编码到 query 和 key
-    
-    Args:
-        q: query 向量, shape = [batch, seq_len, n_heads, head_dim]
-        k: key 向量, shape = [batch, seq_len, n_heads, head_dim]
-        freqs_cis: 预计算的频率矩阵, shape = [seq_len, head_dim//2]
-    
-    Returns:
-        q_rot, k_rot: 应用 RoPE 后的 query 和 key
-    """
-    # 将实数张量转换为复数形式
-    # q.shape = [..., seq_len, head_dim], 拆分奇偶位置
-    q_real = q.float().reshape(*q.shape[:-1], -1, 2)  # [..., seq_len, head_dim/2, 2]
-    k_real = k.float().reshape(*k.shape[:-1], -1, 2)
-    
-    # 转换为复数
-    q_complex = torch.view_as_complex(q_real)
-    k_complex = torch.view_as_complex(k_real)
-    
-    # 调整 freq_cis 维度以便广播
-    freqs_cis = freqs_cis.unsqueeze(0).unsqueeze(0)  # [1, 1, seq_len, head_dim/2]
-    
-    # 复数乘法实现旋转
-    q_rot = torch.view_as_real(q_complex * freqs_cis).flatten(-2)
-    k_rot = torch.view_as_real(k_complex * freqs_cis).flatten(-2)
-    
-    return q_rot, k_rot
+    inv_freq = 1.0 / (
+        base ** (torch.arange(0, dim, 2).float() / dim)
+    )
+    return inv_freq
 ```
 
-### 3.2 融合版本的优化实现
+如果 `head_dim = 8`，则会产生 4 个频率，对应 4 组二维旋转平面。
 
-{IMAGE:11}
+### 2. 根据位置生成 cos 和 sin
 
 ```python
-def apply_rotary_emb_fused(q: torch.Tensor, k: torch.Tensor,
-                           freqs_cis: torch.Tensor):
+def build_rope_cache(seq_len, dim, base=10000.0, device="cpu"):
     """
-    更高效的融合实现，直接使用实数运算
-    
-    这种方式避免了复数转换的开销，在实际框架中被广泛采用
+    预先生成 RoPE 所需的 cos/sin cache
     """
-    batch_size, seq_len, n_heads, head_dim = q.shape
-    head_dim_half = head_dim // 2
-    
-    # 分离奇偶维度
-    q1 = q[..., :head_dim_half]  # 前半部分
-    q2 = q[..., head_dim_half:]  # 后半部分
-    k1 = k[..., :head_dim_half]
-    k2 = k[..., head_dim_half:]
-    
-    # 展开 freq_cis 的实部和虚部
-    cos = freqs_cis.real  # [seq_len, head_dim_half]
-    sin = freqs_cis.imag  # [seq_len, head_dim_half]
-    
-    # 广播到正确维度
-    cos = cos.unsqueeze(0).unsqueeze(0)  # [1, 1, seq_len, head_dim_half]
-    sin = sin.unsqueeze(0).unsqueeze(0)
-    
-    # 应用旋转公式
-    # q' = q1 * cos + rotate_half(q2) * sin
-    # 其中 rotate_half 将后半部分取负并交换顺序
-    q_rot = torch.cat([
-        q1 * cos - q2 * sin,
-        q2 * cos + q1 * sin
-    ], dim=-1)
-    
-    k_rot = torch.cat([
-        k1 * cos - k2 * sin,
-        k2 * cos + k1 * sin
-    ], dim=-1)
-    
-    return q_rot, k_rot
+    inv_freq = build_inv_freq(dim, base).to(device)
+
+    # 位置索引：[0, 1, 2, ..., seq_len-1]
+    positions = torch.arange(seq_len, device=device).float()
+
+    # 外积得到每个位置、每个频率的角度
+    freqs = torch.einsum("i,j->ij", positions, inv_freq)
+
+    # 每个二维对共享一个角度，因此复制到偶数/奇数维
+    emb = torch.cat([freqs, freqs], dim=-1)
+
+    cos = emb.cos()
+    sin = emb.sin()
+    return cos, sin
 ```
 
-{IMAGE:12}
+### 3. rotate_half 操作
 
-{WARNING}易错点{/WARNING}
+对于向量：
 
-**实现注意事项**：
-1. `freqs_cis` 必须预计算并存储，**不要在每次前向传播时重新计算**
-2. 确保 `head_dim` 为偶数，否则无法正确拆分
-3. 使用半精度（fp16/bf16）时，注意数值精度问题
-4. 在推理时，`freqs_cis` 的长度应覆盖最大序列长度
+$$
+[x_0,x_1,x_2,x_3]
+$$
 
----
+旋转时需要构造：
 
-## 4. 位置编码的长度外推问题
-
-### 4.1 什么是长度外推
-
-{IMPORTANT}核心概念{/IMPORTANT}
-
-**长度外推（Length Extrapolation）** 是指模型在训练时使用固定最大长度（如 2048 tokens），但推理时可以处理更长序列（如 8192+ tokens）的能力。
-
-{KNOWLEDGE}背景知识{/KNOWLEDGE}
-
-这个问题在大语言模型中尤为重要：
-- 训练成本高昂，无法每次都重新训练
-- 实际应用场景需要处理长文档、长对话
-- 上下文窗口直接影响模型可用性
-
-### 4.2 RoPE 外推的挑战
-
-{IMAGE:1}
-
-即使 RoPE 相对位置编码的特性使其理论上具有更好的外推能力，但在实践中仍面临挑战：
-
-1. **分布偏移**：训练时见过的大位置编码与测试时的位置编码分布不同
-2. **低频信息丢失**：高频维度（$i$ 较大）的旋转周期短，在短序列中就能观察到多周期；而低频维度的周期可能超过训练长度
-3. **注意力机制的脆弱性**：远程位置的注意力分数可能变得不稳定
-
----
-
-## 5. YaRN：RoPE 外推技术
-
-### 5.1 YaRN 概述
-
-{IMPORTANT}核心概念{/IMPORTANT}
-
-**YaRN（Yet another RoPE extensioN）** 是 2023 年提出的 RoPE 扩展方法，通过**三项关键改进**显著提升了 RoPE 的长度外推能力：
-
-1. **温度缩放（Temperature Scaling）**
-2. **注意力缩放（Attention Scaling）**
-3. **位置插值（Position Interpolation）**
-
-### 5.2 理论基础：频率与外推性
-
-{IMAGE:2}
-
-YaRN 的核心洞察在于：RoPE 中不同频率维度的行为差异导致了外推困难。
-
-设旋转角度为 $\theta_i = \theta_0^{-2i/d}$，对应的**旋转周期**为：
-
-$$T_i = \frac{2\pi}{\theta_i}$$
-
-{IMAGE:3}
-
-- **高频维度**（$i$ 大）：$\theta_i$ 大，周期 $T_i$ 小，容易在短序列中充分采样
-- **低频维度**（$i$ 小）：$\theta_i$ 小，周期 $T_i$ 大，可能超过训练长度
-
-当测试序列超过训练长度时，低频维度面临**从未见过的角度范围**，导致泛化失败。
-
-### 5.3 温度缩放
-
-{IMAGE:4}
-
-{IMPORTANT}核心概念{/IMPORTANT}
-
-**温度缩放**通过引入参数 $\tau$ 来调整所有旋转频率：
-
-$$\theta_i' = \frac{\theta_i}{\tau}$$
-
-{IMAGE:5}
-
-物理意义：
-- 增大 $\tau$ 会减小旋转角度，使每个位置的旋转更"小"
-- 这使得在相同序列长度内能覆盖更多周期
-- 相当于重新调整了频率分布，使低频维度更不易于"超调"
+$$
+[-x_1,x_0,-x_3,x_2]
+$$
 
 ```python
-def precompute_freqs_cis_with_temperature(
-    dim: int, 
-    seq_len: int, 
-    theta: float = 10000.0,
-    tau: float = 1.0
-):
+def rotate_half(x):
     """
-    带温度缩放的 RoPE 频率预计算
-    
-    Args:
-        tau: 温度参数，通常设置为略大于 1.0（如 1.0-2.0）
+    将最后一维按两半或偶奇配对旋转。
+    这里给出常见简化写法，具体实现需与模型维度布局一致。
     """
-    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
-    # 温度缩放
-    freqs = freqs / tau
-    
-    positions = torch.arange(seq_len)
-    angles = positions[:, None] * freqs[None, :]
-    freqs_cis = torch.polar(torch.ones_like(angles), angles)
-    
-    return freqs_cis
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
 ```
 
-### 5.4 位置插值
+### 4. 应用 RoPE
 
-{IMAGE:6}
+```python
+def apply_rotary_pos_emb(q, k, cos, sin):
+    """
+    q, k: [batch, heads, seq_len, head_dim]
+    cos, sin: [seq_len, head_dim]
+    """
+    cos = cos[None, None, :, :]
+    sin = sin[None, None, :, :]
 
-{IMAGE:7}
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
 
-**位置插值（Position Interpolation, PI）** 由苏剑林等人提出，核心思想是**线性压缩位置索引**：
-
-对于原始位置 $x \in [0, L_{max})$，通过缩放因子 $s$ 映射到训练范围：
-
-$$x' = \frac{x}{s}, \quad s = \frac{L_{new}}{L_{max}}$$
-
-{IMAGE:8}
-
-{KNOWLEDGE}背景知识{/KNOWLEDGE}
-
-这确保了任意新位置 $x$ 都被映射到训练时见过的位置范围内：
-- $x \in [0, L_{new}) \Rightarrow x' \in [0, L_{max})$
-- 模型不需要外推到未见过的位置
-
-但直接插值会损失高频分辨率，YaRN 通过组合多种策略来解决这个问题。
-
-### 5.5 注意力缩放因子
+    return q_embed, k_embed
+```
 
 {IMAGE:9}
 
-{IMPORTANT}核心概念{/IMPORTANT}
+{WARNING}易错点：不同项目中 RoPE 的维度排列方式可能不同。有的实现按前后两半切分，有的实现按偶数维和奇数维交错配对。只要数学上对应同一组二维旋转即可，但代码实现必须保持一致。{/WARNING}
 
-**注意力缩放**是 YaRN 的关键创新之一。通过在注意力计算中引入缩放因子 $\sqrt{t}$，补偿因位置压缩导致的信息密度变化：
-
-$$\text{Attention}_{\text{YaRN}}(q, k, v) = \text{Softmax}\left(\frac{q^T k}{\sqrt{t} \cdot s}\right) v$$
-
-其中 $t = \frac{\theta_i}{\beta}$ 是与频率相关的参数，$\beta$ 是边界阈值。
-
-{IMAGE:10}
-
-{IMAGE:11}
-
-```python
-def compute_attention_with_yarn(
-    q: torch.Tensor,
-    k: torch.Tensor, 
-    v: torch.Tensor,
-    freqs_cis: torch.Tensor,
-    scale: float = 1.0,
-    yarn_enabled: bool = True
-):
-    """
-    带 YaRN 缩放的注意力计算
-    
-    Args:
-        scale: 额外的注意力缩放因子
-        yarn_enabled: 是否启用 YaRN
-    """
-    # 应用 RoPE
-    q_rot, k_rot = apply_rotary_emb_fused(q, k, freqs_cis)
-    
-    # 计算注意力分数
-    # [batch, n_heads, seq_len_q, seq_len_k]
-    scores = torch.matmul(q_rot, k_rot.transpose(-2, -1))
-    
-    if yarn_enabled:
-        # YaRN 注意力缩放
-        # 缩放因子帮助模型更好地处理外推位置
-        scores = scores / (scale * math.sqrt(q.shape[-1]))
-    else:
-        scores = scores / math.sqrt(q.shape[-1])
-    
-    # Softmax 归一化
-    attn_weights = F.softmax(scores, dim=-1)
-    
-    # 加权求和
-    attn_output = torch.matmul(attn_weights, v)
-    
-    return attn_output, attn_weights
-```
-
-### 5.6 完整 YaRN 实现
-
-{IMAGE:12}
-
-```python
-class YaRNRoPE:
-    """
-    完整的 YaRN RoPE 实现，支持长度外推
-    """
-    def __init__(
-        self,
-        dim: int,
-        max_position: int = 2048,      # 训练时的最大长度
-        base: float = 10000.0,
-        scaling_factor: float = 1.0,   # 位置缩放因子
-        beta: float = 32.0,            # YaRN 频率边界
-        mscale: float = 1.0,           # 注意力缩放因子
-    ):
-        self.dim = dim
-        self.max_position = max_position
-        self.base = base
-        self.scaling_factor = scaling_factor
-        self.beta = beta
-        self.mscale = mscale
-        
-        # 预计算频率
-        self._compute_freqs()
-    
-    def _compute_freqs(self):
-        """计算旋转频率"""
-        inv_freq = 1.0 / (self.base ** (
-            torch.arange(0, self.dim, 2).float() / self.dim
-        ))
-        self.inv_freq = inv_freq
-        
-        # YaRN: 应用温度缩放
-        # 频率调整使外推更稳定
-        self.scaled_inv_freq = inv_freq / self.scaling_factor
-    
-    def _get_mscale(self, scale_factor: float = 1.0) -> float:
-        """
-        计算 YaRN 的注意力缩放因子
-        
-        基于原始论文的推荐值
-        """
-        if self.mscale != 1.0:
-            return self.mscale
-        
-        # 当缩放因子变化时动态计算 mscale
-        # 经验公式，帮助平衡信息密度
-        return 0.1 * scale_factor * math.log(scale_factor) + 1.0
-    
-    def forward(
-        self, 
-        seq_len: int,
-        device: torch.device
-    ):
-        """
-        生成指定长度的 RoPE 频率
-        
-        支持动态扩展到任意长度，实现长度外推
-        """
-        # 生成位置序列（可超出 max_position）
-        positions = torch.arange(seq_len, device=device)
-        
-        # 计算角度
-        angles = positions[:, None] * self.scaled_inv_freq[None, :]
-        
-        # 转换为复数形式
-        freqs_cis = torch.polar(
-            torch.ones_like(angles), 
-            angles
-        )
-        
-        return freqs_cis
-```
+本节小结：RoPE 实现通常包括三步：构造频率、缓存 cos/sin、对 Q/K 应用旋转。工程中要注意维度布局与 broadcasting。
 
 ---
 
-## 6. 总结与实践建议
+## 六、RoPE 与注意力机制的结合
 
-### 6.1 本讲核心要点
+在标准多头注意力中：
 
-{IMPORTANT}核心概念{/IMPORTANT}
+```python
+def attention(q, k, v, mask=None):
+    """
+    q, k, v: [batch, heads, seq_len, head_dim]
+    """
+    scores = torch.matmul(q, k.transpose(-2, -1))
+    scores = scores / (q.shape[-1] ** 0.5)
 
-1. **RoPE 原理**：通过将位置编码为旋转矩阵，使 query 和 key 旋转后内积只依赖相对位置
-2. **高效实现**：RoPE 可通过逐元素乘法实现，无需构造大型稀疏矩阵
-3. **外推挑战**：不同频率维度的周期差异导致长序列外推困难
-4. **YaRN 改进**：温度缩放 + 注意力缩放 + 位置插值组合提升外推能力
+    if mask is not None:
+        scores = scores.masked_fill(mask == 0, float("-inf"))
 
-### 6.2 实践建议
+    probs = torch.softmax(scores, dim=-1)
+    output = torch.matmul(probs, v)
+    return output
+```
 
-| 场景 | 推荐配置 |
-|------|---------|
-| 短上下文（≤2K） | 原始 RoPE，无需 YaRN |
-| 中等上下文（2K-8K） | RoPE + 轻微温度缩放（τ≈1.1） |
-| 长上下文（>8K） | YaRN + 位置插值 + 注意力缩放
+加入 RoPE 后，流程变为：
+
+```python
+def attention_with_rope(q, k, v, cos, sin, mask=None):
+    """
+    在计算注意力分数前，对 q/k 注入旋转位置编码。
+    """
+    q, k = apply_rotary_pos_emb(q, k, cos, sin)
+
+    scores = torch.matmul(q, k.transpose(-2, -1))
+    scores = scores / (q.shape[-1] ** 0.5)
+
+    if mask is not None:
+        scores = scores.masked_fill(mask == 0, float("-inf"))
+
+    probs = torch.softmax(scores, dim=-1)
+    output = torch.matmul(probs, v)
+    return output
+```
+
+{IMAGE:10}
+
+RoPE 的位置编码不是一个独立模块，而是嵌入到 attention 计算路径中。模型的每一层 attention 都可以使用 RoPE，使不同层都能感知相对位置关系。
+
+本节小结：RoPE 在工程上通常位于 attention 层内部，作用于 Q/K，随后再进入正常的 scaled dot-product attention。
+
+---
+
+## 七、RoPE 的长上下文外推问题
+
+### 1. 训练长度与推理长度不一致
+
+假设模型训练时最大长度为：
+
+$$
+L_{\text{train}}=2048
+$$
+
+推理时希望扩展到：
+
+$$
+L_{\text{infer}}=8192
+$$
+
+这就是上下文外推问题。
+
+RoPE 虽然有一定外推能力，但直接把位置从 2048 推到 8192，可能会出现明显性能下降。
+
+{IMAGE:11}
+
+原因包括：
+
+1. 训练中没有见过过大的位置索引
+2. 高频维度旋转过快，远距离位置角度变化剧烈
+3. 注意力分布在长上下文中可能失衡
+4. 位置插值会影响局部位置分辨率
+
+### 2. RoPE 中的位置频率
+
+RoPE 的角度为：
+
+$$
+m \cdot \theta_i
+$$
+
+当位置 $m$ 变大时，角度会不断增大。由于三角函数周期性：
+
+$$
+\sin(x),\cos(x)
+$$
+
+会产生周期重叠问题。
+
+高频维度尤其容易在长位置处发生快速震荡，使模型难以稳定理解长距离关系。
+
+{IMAGE:12}
+
+{WARNING}易错点：RoPE 可以外推，不等于可以无限外推。超过训练长度太多时，模型可能会出现困惑度上升、长距离检索失败、生成质量下降等问题。{/WARNING}
+
+本节小结：RoPE 的外推能力来自频率结构，但过长上下文会让位置角度进入训练外分布，导致注意力行为不稳定。
+
+---
+
+## 八、位置插值：Position Interpolation
+
+一种朴素思路是：把长序列位置压缩回训练长度范围。
+
+如果训练长度是 2048，推理长度是 8192，可以令：
+
+$$
+m' = \frac{m}{s}
+$$
+
+其中：
+
+$$
+s = \frac{L_{\text{infer}}}{L_{\text{train}}}
+$$
+
+也就是：
+
+$$
+s = \frac{8192}{2048}=4
+$$
+
+那么位置 8192 会被映射到 2048 附近。
+
+{IMAGE:13}
+
+对应到 RoPE 角度：
+
+$$
+m\theta_i \rightarrow \frac{m}{s}\theta_i
+$$
+
+这相当于降低了所有频率的旋转速度。
+
+### 优点
+
+- 简单
+- 能减少训练外位置带来的角度爆炸
+- 对长上下文有帮助
+
+### 缺点
+
+- 所有维度统一缩放
+- 局部位置分辨率下降
+- 短距离关系可能受损
+
+{KNOWLEDGE}背景知识：长上下文任务既需要远距离能力，也需要短距离精度。简单位置插值会把所有位置都压缩，导致相邻 token 的角度差变小，局部顺序感可能变弱。{/KNOWLEDGE}
+
+本节小结：位置插值通过压缩位置索引来扩展上下文，但它对所有频率一视同仁，容易牺牲局部精度。
+
+---
+
+## 九、YaRN 的核心思想
+
+YaRN，全称 Yet another RoPE extensioN，是一种改进 RoPE 长上下文外推的方法。
+
+它的目标是：
+
+1. 保留短上下文内的局部分辨率
+2. 改善长上下文外推能力
+3. 避免简单位置插值对所有频率统一缩放
+4. 让不同频率维度采用不同的缩放策略
+
+{IMAGE:14}
+
+{IMPORTANT}核心概念：YaRN 的本质是对 RoPE 的频率缩放做更精细的控制。它不是简单地把所有位置除以同一个比例，而是区分高频和低频，让不同频率承担不同的上下文建模职责。{/IMPORTANT}
+
+### 1. 高频与低频的不同作用
+
+在 RoPE 中：
+
+- 高频维度：变化快，更适合局部位置关系
+- 低频维度：变化慢，更适合长距离关系
+
+如果统一缩放所有频率：
+
+$$
+\theta_i \rightarrow \frac{\theta_i}{s}
+$$
+
+那么高频维度也会变慢，局部分辨率受损。
+
+YaRN 希望：
+
+- 高频部分尽量保留原始 RoPE
+- 低频部分进行更强的缩放，支持更远距离
+- 中间频率平滑过渡
+
+{IMAGE:15}
+
+本节小结：YaRN 的核心不是“让位置变小”这么简单，而是按频率分区处理，使短程和长程能力兼顾。
+
+---
+
+## 十、YaRN 的频率缩放与插值机制
+
+### 1. 缩放因子
+
+设目标扩展倍数为：
+
+$$
+s = \frac{L_{\text{target}}}{L_{\text{original}}}
+$$
+
+例如从 2048 扩展到 8192：
+
+$$
+s=4
+$$
+
+YaRN 会设计一个随维度变化的缩放函数，让不同频率使用不同程度的缩放。
+
+可以抽象写成：
+
+$$
+\theta'_i = \frac{\theta_i}{g(i)}
+$$
+
+其中：
+
+- $i$ 是频率维度索引
+- $g(i)$ 是与维度相关的缩放因子
+- 对某些维度，$g(i) \approx 1$
+- 对另一些维度，$g(i) \approx s$
+
+{IMAGE:16}
+
+### 2. 平滑过渡
+
+YaRN 通常不会让频率突然从“不缩放”跳到“完全缩放”，而是使用 ramp 函数做平滑过渡。
+
+可抽象表示为：
+
+$$
+\lambda_i = \text{ramp}(i)
+$$
+
+$$
+\theta'_i
+=
+(1-\lambda_i)\theta_i
++
+\lambda_i \frac{\theta_i}{s}
+$$
+
+其中：
+
+- $\lambda_i=0$ 表示保持原始频率
+- $\lambda_i=1$ 表示完全按比例缩放
+- $0<\lambda_i<1$ 表示插值过渡
+
+```python
+def linear_ramp_mask(dim, low, high):
+    """
+    构造一个从 0 到 1 的线性过渡 mask。
+    low/high 控制哪些维度开始、结束缩放。
+    """
+    idx = torch.arange(dim, dtype=torch.float32)
+    mask = (idx - low) / (high - low)
+    mask = torch.clamp(mask, 0.0, 1.0)
+    return mask
+```
+
+### 3. 简化版 YaRN 频率构造
+
+```python
+def build_yarn_inv_freq(dim, base=10000.0, scale=4.0, low=8, high=32):
+    """
+    简化版 YaRN 思路：
+    对不同维度的 inv_freq 进行平滑缩放。
+    这不是完整官方实现，只用于理解原理。
+    """
+    inv_freq = build_inv_freq(dim, base)
+
+    # 每个频率对应一个维度索引
+    freq_dim = inv_freq.shape[0]
+
+    # 生成 0 到 1 的平滑 mask
+    ramp = linear_ramp_mask(freq_dim, low, high)
+
+    # 缩放后的频率
+    scaled_inv_freq = inv_freq / scale
+
+    # 高频保留原频率，低频使用缩放频率，中间平滑过渡
+    yarn_inv_freq = (1 - ramp) * inv_freq + ramp * scaled_inv_freq
+
+    return yarn_inv_freq
+```
+
+{WARNING}易错点：YaRN 不是简单把 RoPE 的 base 改大，也不是简单把 position 除以 scale。它通常包含频率分段、平滑插值以及注意力缩放等细节。{/WARNING}
+
+本节小结：YaRN 通过对不同频率维度设置不同缩放强度，在保留短距离分辨率的同时增强长距离外推。
+
+---
+
+## 十一、YaRN 中的 attention scaling
+
+除了频率缩放，YaRN 还可能引入 attention scaling，用于补偿长上下文下注意力分布的变化。
+
+在标准注意力中：
+
+$$
+\text{score}=\frac{qk^T}{\sqrt d}
+$$
+
+当上下文长度变长时，softmax 的竞争范围扩大，注意力分布可能发生变化。
+
+因此可以引入一个额外缩放系数：
+
+$$
+\text{score}=\frac{qk^T}{\sqrt d}\cdot a
+$$
+
+其中 $a$ 与扩展倍率有关。
+
+{IMAGE:17}
+
+直观理解：
+
+- 长上下文中 token 数量更多
+- softmax 归一化范围更大
+- 注意力峰值和分布形态可能改变
+- scaling 有助于稳定外推后的注意力行为
+
+本节小结：YaRN 不只关注 RoPE 角度，还可能调整注意力分数尺度，以适应更长上下文带来的分布变化。
+
+---
+
+## 十二、MiniMind 中理解 RoPE/YaRN 的实现重点
+
+在 MiniMind 这类从零手写大模型项目中，重点不是一开始追求最复杂的优化，而是理解结构：
+
+1. RoPE 作用在 attention 的 Q/K 上
+2. cos/sin 通常提前缓存
+3. position index 控制旋转角度
+4. 长上下文扩展主要改的是频率或位置映射
+5. YaRN 是更精细的 RoPE scaling 方案
+
+{IMAGE:18}
+
+一个简化的模块结构可以写成：
+
+```python
+class RotaryEmbedding:
+    def __init__(self, dim, max_seq_len, base=10000.0):
+        self.dim = dim
+        self.max_seq_len = max_seq_len
+        self.base = base
+
+        self.cos_cached, self.sin_cached = build_rope_cache(
+            seq_len=max_seq_len,
+            dim=dim,
+            base=base,
+        )
+
+    def apply(self, q, k, position_ids=None):
+        """
+        q, k: [batch, heads, seq_len, head_dim]
+        position_ids: 可选，用于支持 KV cache 或非连续位置
+        """
+        seq_len = q.shape[-2]
+
+        if position_ids is None:
+            cos = self.cos_cached[:seq_len]
+            sin = self.sin_cached[:seq_len]
+        else:
+            cos = self.cos_cached[position_ids]
+            sin = self.sin_cached[position_ids]
+
+        return apply_rotary_pos_emb(q, k, cos, sin)
+```
+
+在真实训练和推理中，还需要考虑：
+
+- batch 维度
+- 多头维度
+- KV cache 时的位置偏移
+- mixed precision
+- device 一致性
+- max sequence length 动态扩展
+
+{IMAGE:19}
+
+{IMPORTANT}核心概念：理解 RoPE 的最好切入点是 attention score。只要明白旋转后的 $q_m^T k_n$ 变成与 $n-m$ 有关，就能抓住它的本质。{/IMPORTANT}
+
+本节小结：在 MiniMind 中实现 RoPE 时，应重点关注 Q/K 旋转、cos/sin 缓存和 position_ids 对齐；YaRN 则主要改造频率生成逻辑。
+
+---
+
+## 十三、RoPE 与 YaRN 的对比
+
+| 方法 | 核心做法 | 优点 | 缺点 |
+|---|---|---|---|
+| 绝对位置编码 | 位置向量加到 embedding | 简单直观 | 长度外推较弱 |
+| 相对位置编码 | 显式建模位置差 | 相对关系清晰 | 实现可能更复杂 |
+| RoPE | 对 Q/K 做位置旋转 | 相对位置自然进入点积 | 超长外推仍会退化 |
+| 位置插值 | 压缩 position index | 简单有效 | 局部分辨率下降 |
+| YaRN | 分频率缩放 RoPE | 长短距离兼顾 | 实现细节更多 |
+
+{IMAGE:20}
+
+### RoPE 适合解决什么问题
+
+RoPE 主要解决：
+
+- attention 无位置信息
+- 绝对位置编码不够自然
+- 需要在点积中体现相对距离
+- 希望位置编码与多头注意力深度结合
+
+### YaRN 适合解决什么问题
+
+YaRN 主要解决：
+
+- RoPE 原始上下文长度不够
+- 直接外推效果下降
+- 简单插值损伤短距离能力
+- 希望以较低成本扩展模型上下文窗口
+
+本节小结：RoPE 是现代大模型中非常常用的位置编码方式，YaRN 则是围绕 RoPE 的长上下文扩展技巧。
+
+---
+
+## 十四、常见误区总结
+
+{WARNING}易错点：误以为 RoPE 是 embedding 加法。  
+RoPE 实际作用于 attention 中的 Query 和 Key，而不是直接加到输入 embedding 上。{/WARNING}
+
+{WARNING}易错点：误以为 RoPE 只能表示绝对位置。  
+RoPE 使用绝对位置角度进行旋转，但点积后体现的是相对位置差。{/WARNING}
+
+{WARNING}易错点：误以为长上下文只需要把 max_seq_len 改大。  
+如果不处理 RoPE 外推问题，模型可能虽然能跑更长输入，但效果明显下降。{/WARNING}
+
+{WARNING}易错点：误以为 YaRN 等于简单 position interpolation。  
+YaRN 更强调不同频率维度的差异化缩放，以及必要的注意力尺度调整。{/WARNING}
+
+本节小结：RoPE 和 YaRN 都不只是工程技巧，它们背后有明确的数学动机和建模目标。
+
+---
+
+## 十五、关键公式回顾
+
+### RoPE 旋转
+
+$$
+\tilde q_m = R_m q_m
+$$
+
+$$
+\tilde k_n = R_n k_n
+$$
+
+### 点积中的相对位置
+
+$$
+\tilde q_m^T \tilde k_n
+=
+q_m^T R_m^T R_n k_n
+=
+q_m^T R_{n-m}k_n
+$$
+
+### RoPE 频率
+
+$$
+\theta_i = 10000^{-2i/d}
+$$
+
+### 位置插值
+
+$$
+m' = \frac{m}{s}
+$$
+
+### YaRN 抽象缩放
+
+$$
+\theta'_i = \frac{\theta_i}{g(i)}
+$$
+
+或用插值形式表达：
+
+$$
+\theta'_i
+=
+(1-\lambda_i)\theta_i
++
+\lambda_i \frac{\theta_i}{s}
+$$
+
+本节小结：RoPE 的数学核心是旋转矩阵的相对角度性质；YaRN 的数学核心是对不同频率进行分层缩放。
+
+---
+
+## Key Takeaways
+
+1. Transformer 自注意力本身不包含顺序信息，因此需要位置编码。
+2. RoPE 通过对 Query 和 Key 做旋转，把位置信息注入注意力分数。
+3. RoPE 形式上使用绝对位置，点积后自然得到相对位置关系。
+4. RoPE 的不同维度对应不同频率，高频关注局部，低频关注长距离。
+5. 长上下文外推时，原始 RoPE 可能出现性能退化。
+6. YaRN 通过频率分段缩放和平滑过渡，在保留局部精度的同时扩展上下文。
+7. 实现 RoPE 时最重要的是 cos/sin cache、维度配对、Q/K 对齐和 position_ids 处理。
+
+## 思考题
+
+1. 为什么 RoPE 只作用在 Query 和 Key 上，而通常不作用在 Value 上？
+2. 如果把所有 RoPE 频率都统一除以同一个 scale，会对短距离建模产生什么影响？
+3. YaRN 为什么要区分高频和低频，而不是简单增加最大位置长度？

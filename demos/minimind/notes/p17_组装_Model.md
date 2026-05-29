@@ -1,590 +1,1099 @@
 # 第17集: 组装：Model
 
-# 第17课：组装：Model — Transformer完整实现
+## 第17集：组装：Model
 
-**课程**：MiniMind - PyTorch从零手敲大模型  
-**时长**：11分43秒  
-**Episode**：17/26
+### 课程定位
 
----
+本集进入 MiniMind Transformer 实现中非常关键的一步：把前面已经手写完成的模块组装成一个完整的语言模型 `Model`。
 
-## 课程概述
+在前面的课程中，我们已经分别实现过：
 
-本节课将把之前实现的各个模块组合起来，构建一个完整的Transformer模型。我们将实现编码器（Encoder）、解码器（Decoder）以及完整的模型架构，为后续的语言模型训练奠定基础。
+- `RMSNorm`
+- `Attention`
+- `FeedForward`
+- `TransformerBlock`
+- `RoPE` 旋转位置编码
+- `KV Cache`
+- Token Embedding
+- 输出层 Linear Head
 
-{IMAGE:1}
-
----
-
-## 1. Transformer架构回顾
-
-{IMPORTANT}核心概念{/IMPORTANT}
-
-Transformer是一种完全基于注意力机制（Attention Mechanism）的序列到序列（Seq2Seq）模型，由Vaswani等人于2017年在论文《Attention Is All You Need》中首次提出。它摒弃了传统的RNN和CNN结构，采用自注意力机制实现并行计算，大幅提升了训练效率。
-
-{IMAGE:2}
-
-### 1.1 Transformer整体架构
-
-Transformer由**编码器**和**解码器**两大部分组成：
-
-$$Transformer = Encoder \times N + Decoder \times N$$
-
-- **编码器**：将输入序列转换为连续的表示
-- **解码器**：基于编码器输出和已生成的部分序列，生成目标序列
-
-{KNOWLEDGE}背景知识{/KNOWLEDGE}
-
-典型配置：
-- 编码器层数：$N=6$
-- 解码器层数：$N=6$
-- 隐藏层维度：$d_{model}=512$
-- 注意力头数：$h=8$
-- 前馈网络维度：$d_{ff}=2048$
-
----
-
-## 2. 位置编码（Positional Encoding）
-
-{IMAGE:3}
-
-{IMPORTANT}核心概念{/IMPORTANT}
-
-由于自注意力机制是位置无关的（Permutation Invariant），需要显式地向模型注入序列中token的位置信息。Transformer使用正弦和余弦函数生成位置编码：
-
-$$PE_{(pos,2i)} = \sin\left(\frac{pos}{10000^{2i/d_{model}}}\right)$$
-
-$$PE_{(pos,2i+1)} = \cos\left(\frac{pos}{10000^{2i/d_{model}}}\right)$$
-
-### 2.1 位置编码实现
-
-```python
-import torch
-import torch.nn as nn
-import math
-
-class PositionalEncoding(nn.Module):
-    """位置编码层 - 为序列中的每个位置添加位置信息"""
-    
-    def __init__(self, d_model, max_len=5000, dropout=0.1):
-        super().__init__()
-        self.dropout = nn.Dropout(p=dropout)
-        
-        # 创建位置编码矩阵
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(
-            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
-        )
-        
-        # 偶数位置使用sin，奇数位置使用cos
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0)  # [1, max_len, d_model]
-        
-        # 注册为缓冲区（非参数）
-        self.register_buffer('pe', pe)
-    
-    def forward(self, x):
-        """
-        Args:
-            x: [batch_size, seq_len, d_model]
-        """
-        x = x + self.pe[:, :x.size(1), :]
-        return self.dropout(x)
-```
-
-{IMAGE:4}
-
-### 2.2 位置编码的直观理解
-
-{WARNING}易错点{/WARNING}
-
-1. **维度匹配**：确保位置编码的维度与输入嵌入维度完全一致
-2. **可学习vs固定**：位置编码可以是固定的（Sinusoidal）也可以是可学习的，Transformer原始论文使用固定编码
-3. **外推能力**：固定位置编码对外推长度的处理有局限
-
-$$PE_{(pos+k,2i)} = \sin(pos+k) = \sin(pos)\cos(k) + \cos(pos)\sin(k)$$
-
-这种编码方式允许模型学习相对位置关系，因为存在线性变换关系。
-
----
-
-## 3. 多头注意力机制（Multi-Head Attention）
+这一集的目标不是重新解释某个单独模块，而是把这些模块按照大模型的标准结构串联起来，形成一个可以训练、可以推理、可以计算 loss 的完整 Transformer Decoder-only 模型。
 
 {IMAGE:5}
 
-{IMPORTANT}核心概念{/IMPORTANT}
+{IMPORTANT}本集核心目标：理解一个大语言模型类 `Model` 的完整组成，包括输入 token 如何变成 logits，训练时如何计算 loss，推理时如何只取最后一个 token 的输出。{/IMPORTANT}
 
-多头注意力将输入分别投影到$h$个不同的子空间，每个头独立计算注意力，然后拼接结果：
+本节小结：本集是从“零件实现”走向“完整模型”的关键阶段，重点在于整体结构和数据流。
 
-$$\text{MultiHead}(Q, K, V) = \text{Concat}(\text{head}_1, ..., \text{head}_h)W^O$$
+---
 
-其中 $\text{head}_i = \text{Attention}(QW_i^Q, KW_i^K, VW_i^V)$
+## 一、Transformer Model 的整体结构
 
-### 3.1 缩放点积注意力
+### 1. Decoder-only 架构
 
-$$Attention(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V$$
+MiniMind 使用的是典型的 Decoder-only Transformer 结构，和 GPT、LLaMA 一类自回归语言模型类似。
+
+整体流程可以概括为：
+
+$$
+\text{tokens} \rightarrow \text{Embedding} \rightarrow N \times \text{TransformerBlock} \rightarrow \text{Norm} \rightarrow \text{LM Head} \rightarrow \text{logits}
+$$
+
+也就是：
+
+1. 输入 token id
+2. 经过词嵌入层变成向量
+3. 依次通过多层 Transformer Block
+4. 做最终归一化
+5. 映射到词表大小
+6. 得到每个位置预测下一个 token 的概率分布
+
+{IMAGE:1}
+
+### 2. 模型类的职责
+
+`Model` 类通常负责：
+
+- 定义词嵌入层
+- 定义多层 Transformer Block
+- 定义最终 RMSNorm
+- 定义输出线性层
+- 预计算 RoPE 频率
+- 管理 forward 训练逻辑
+- 管理推理时的 KV Cache
+- 在有标签时计算交叉熵损失
+
+{KNOWLEDGE}在大语言模型中，`Model` 类不是某一个模块，而是“总装车间”。它负责把所有子模块按照数据流顺序组织起来，并处理训练和推理之间的差异。{/KNOWLEDGE}
+
+本节小结：完整模型的本质是多个模块的有序组合，Decoder-only 模型的输出目标是预测下一个 token。
+
+---
+
+## 二、模型配置参数
+
+### 1. 常见配置项
+
+完整模型通常依赖一个配置类，例如：
+
+```python
+@dataclass
+class LMConfig:
+    dim: int = 512
+    n_layers: int = 8
+    n_heads: int = 8
+    n_kv_heads: int = 8
+    vocab_size: int = 6400
+    max_seq_len: int = 512
+    dropout: float = 0.0
+    norm_eps: float = 1e-5
+    hidden_dim: int = None
+```
+
+这些字段决定了模型规模：
+
+- `dim`：隐藏层维度，也就是 token embedding 的维度
+- `n_layers`：Transformer Block 层数
+- `n_heads`：注意力头数量
+- `n_kv_heads`：KV 头数量，用于 GQA/MQA
+- `vocab_size`：词表大小
+- `max_seq_len`：最大上下文长度
+- `dropout`：训练时随机失活概率
+- `norm_eps`：归一化中的数值稳定项
+- `hidden_dim`：FFN 中间层维度
 
 {IMAGE:6}
 
-缩放因子 $\sqrt{d_k}$ 用于防止点积值过大导致softmax梯度消失。
+### 2. 参数规模与模型能力
 
-### 3.2 多头注意力完整实现
+模型参数量大致来自四个部分：
+
+1. 词嵌入矩阵
+2. Attention 中的 Q/K/V/O 投影
+3. FeedForward 中的线性层
+4. 输出层 LM Head
+
+词嵌入参数量为：
+
+$$
+\text{Embedding Params} = \text{vocab\_size} \times \text{dim}
+$$
+
+如果词表大小是 $6400$，隐藏维度是 $512$，那么 embedding 层参数约为：
+
+$$
+6400 \times 512 = 3,276,800
+$$
+
+{WARNING}模型越大不一定越好。参数规模、数据规模、训练算力、上下文长度需要配合，否则容易出现训练不足、过拟合或推理成本过高。{/WARNING}
+
+本节小结：配置类是模型结构的蓝图，控制层数、维度、头数、词表和上下文长度。
+
+---
+
+## 三、词嵌入层：从 token id 到向量
+
+### 1. 输入张量形状
+
+语言模型输入通常是一个二维整数张量：
+
+$$
+x \in \mathbb{Z}^{B \times T}
+$$
+
+其中：
+
+- $B$：batch size
+- $T$：sequence length
+- 每个元素是一个 token id
+
+例如：
+
+```python
+# batch_size = 2, seq_len = 5
+x = torch.tensor([
+    [12, 45, 87, 91, 3],
+    [8, 19, 20, 64, 7],
+])
+```
+
+### 2. Embedding 映射
+
+Embedding 层将 token id 映射为连续向量：
+
+$$
+h = \text{Embedding}(x)
+$$
+
+输出形状变为：
+
+$$
+h \in \mathbb{R}^{B \times T \times C}
+$$
+
+其中 $C = \text{dim}$。
+
+```python
+self.tok_embeddings = nn.Embedding(config.vocab_size, config.dim)
+
+h = self.tok_embeddings(tokens)
+```
+
+{IMAGE:7}
+
+{KNOWLEDGE}Embedding 可以理解为一个可训练查表操作。输入 token id 是离散编号，输出 embedding 是模型可以处理的连续向量。{/KNOWLEDGE}
+
+本节小结：词嵌入层负责把离散 token 转换为连续向量，是 Transformer 的输入入口。
+
+---
+
+## 四、RoPE 位置编码的预计算
+
+### 1. 为什么需要位置编码
+
+自注意力机制本身对输入顺序不敏感。也就是说，如果没有位置编码，模型很难区分：
+
+- “我 爱 你”
+- “你 爱 我”
+
+这两个序列中的 token 集合类似，但语义完全不同。
+
+因此，Transformer 必须加入位置信息。
+
+MiniMind 中通常使用 RoPE，即旋转位置编码。
+
+{IMAGE:8}
+
+### 2. RoPE 的基本思想
+
+RoPE 不直接把位置向量加到 token embedding 上，而是在计算 Q、K 时对向量做旋转变换。
+
+其核心思想是：让位置关系通过向量旋转角度体现出来。
+
+对于某个维度对，可以写成：
+
+$$
+\begin{bmatrix}
+x'_1 \\
+x'_2
+\end{bmatrix}
+=
+\begin{bmatrix}
+\cos \theta & -\sin \theta \\
+\sin \theta & \cos \theta
+\end{bmatrix}
+\begin{bmatrix}
+x_1 \\
+x_2
+\end{bmatrix}
+$$
+
+其中 $\theta$ 与 token 位置有关。
+
+### 3. 预计算频率
+
+为了提高效率，模型初始化时通常会预先计算 RoPE 所需的复数频率或正余弦值：
+
+```python
+self.freqs_cos, self.freqs_sin = precompute_freqs_cis(
+    dim=config.dim // config.n_heads,
+    end=config.max_seq_len
+)
+```
+
+forward 时只需要根据当前序列位置切片即可：
+
+```python
+freqs_cos = self.freqs_cos[start_pos:start_pos + seq_len]
+freqs_sin = self.freqs_sin[start_pos:start_pos + seq_len]
+```
+
+{WARNING}RoPE 的位置切片必须和当前 token 的真实位置对应。训练时通常从 0 开始，推理增量生成时则需要使用 `start_pos` 接续历史位置。{/WARNING}
+
+本节小结：RoPE 通过旋转 Q/K 向量注入位置信息，预计算可以减少 forward 阶段的重复开销。
+
+---
+
+## 五、Transformer Block 堆叠
+
+### 1. 多层结构
+
+完整模型中会有多个 Transformer Block：
+
+```python
+self.layers = nn.ModuleList([
+    TransformerBlock(layer_id, config)
+    for layer_id in range(config.n_layers)
+])
+```
+
+每一层通常包含：
+
+- Attention
+- FeedForward
+- RMSNorm
+- 残差连接
+
+{IMAGE:9}
+
+每层的计算可以简化为：
+
+$$
+h = h + \text{Attention}(\text{Norm}(h))
+$$
+
+$$
+h = h + \text{FeedForward}(\text{Norm}(h))
+$$
+
+这是 Pre-Norm Transformer 的典型写法。
+
+### 2. 为什么要堆很多层
+
+单层 Transformer 只能做一次特征交互，多层堆叠可以让模型逐步抽象：
+
+- 底层捕捉局部 token 关系
+- 中层学习短语、句法关系
+- 高层形成语义和任务相关表示
+
+虽然小模型层数有限，但结构上与大模型一致。
+
+{IMAGE:10}
+
+{IMPORTANT}Transformer 的能力不是来自某个神奇模块，而是来自 Attention、FFN、残差、归一化在多层堆叠中的协同作用。{/IMPORTANT}
+
+本节小结：`ModuleList` 用于保存多层 Transformer Block，forward 时按顺序逐层处理 hidden states。
+
+---
+
+## 六、完整 forward 训练流程
+
+### 1. forward 的输入
+
+训练时，forward 通常接收：
+
+```python
+def forward(self, tokens, targets=None, start_pos=0):
+    ...
+```
+
+其中：
+
+- `tokens`：输入 token id
+- `targets`：监督标签，通常是下一个 token
+- `start_pos`：推理缓存位置，训练时一般为 0
+
+输入形状：
+
+$$
+tokens \in \mathbb{Z}^{B \times T}
+$$
+
+标签形状：
+
+$$
+targets \in \mathbb{Z}^{B \times T}
+$$
+
+{IMAGE:11}
+
+### 2. 训练阶段完整代码示例
+
+```python
+class Transformer(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+
+        # token embedding
+        self.tok_embeddings = nn.Embedding(config.vocab_size, config.dim)
+
+        # dropout 只在训练阶段生效
+        self.dropout = nn.Dropout(config.dropout)
+
+        # 多层 Transformer Block
+        self.layers = nn.ModuleList([
+            TransformerBlock(layer_id, config)
+            for layer_id in range(config.n_layers)
+        ])
+
+        # 最终归一化
+        self.norm = RMSNorm(config.dim, eps=config.norm_eps)
+
+        # 输出到词表维度
+        self.output = nn.Linear(config.dim, config.vocab_size, bias=False)
+
+        # 预计算 RoPE
+        self.freqs_cos, self.freqs_sin = precompute_freqs_cis(
+            config.dim // config.n_heads,
+            config.max_seq_len
+        )
+
+    def forward(self, tokens, targets=None, start_pos=0):
+        batch_size, seq_len = tokens.shape
+
+        # 1. token id -> embedding
+        h = self.tok_embeddings(tokens)
+
+        # 2. dropout
+        h = self.dropout(h)
+
+        # 3. 取出当前位置对应的 RoPE 参数
+        freqs_cos = self.freqs_cos[start_pos:start_pos + seq_len]
+        freqs_sin = self.freqs_sin[start_pos:start_pos + seq_len]
+
+        # 4. 逐层通过 Transformer Block
+        for layer in self.layers:
+            h = layer(h, freqs_cos, freqs_sin, start_pos)
+
+        # 5. 最终归一化
+        h = self.norm(h)
+
+        # 6. 输出 logits
+        logits = self.output(h)
+
+        # 7. 如果提供 targets，则计算训练 loss
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                targets.view(-1),
+                ignore_index=-1
+            )
+
+        return logits, loss
+```
+
+本节小结：训练 forward 是完整序列并行计算，每个位置都会输出一个词表分布，并与 targets 计算交叉熵损失。
+
+---
+
+## 七、Logits 与语言模型目标
+
+### 1. logits 的含义
+
+模型输出：
+
+$$
+logits \in \mathbb{R}^{B \times T \times V}
+$$
+
+其中：
+
+- $B$：batch size
+- $T$：序列长度
+- $V$：词表大小
+
+对于每个位置 $t$，模型都会输出一个长度为 $V$ 的向量，表示下一个 token 的未归一化分数。
+
+{IMAGE:12}
+
+### 2. Softmax 概率
+
+logits 经过 softmax 得到概率：
+
+$$
+P(x_{t+1}=i \mid x_{\le t}) =
+\frac{e^{z_i}}{\sum_{j=1}^{V} e^{z_j}}
+$$
+
+其中：
+
+- $z_i$ 是第 $i$ 个词的 logit
+- 分母对整个词表求和
+- 输出表示下一个 token 是某个词的概率
+
+### 3. 自回归训练目标
+
+语言模型训练目标是预测下一个 token：
+
+$$
+\mathcal{L}
+=
+-\sum_{t=1}^{T}
+\log P(x_{t+1} \mid x_{\le t})
+$$
+
+在 PyTorch 中通常用交叉熵：
+
+```python
+loss = F.cross_entropy(
+    logits.view(-1, vocab_size),
+    targets.view(-1)
+)
+```
+
+{IMPORTANT}语言模型不是直接“理解句子”，而是在训练中不断学习：给定前文，预测下一个 token。复杂能力来自这个目标在大规模数据上的涌现。{/IMPORTANT}
+
+本节小结：logits 是每个位置对词表的预测分数，训练目标是最大化正确下一个 token 的概率。
+
+---
+
+## 八、训练与推理的 forward 差异
+
+### 1. 训练：整段并行
+
+训练时，输入通常是一整段 token：
+
+```python
+tokens.shape = [batch_size, seq_len]
+```
+
+模型一次性输出所有位置的 logits：
+
+```python
+logits.shape = [batch_size, seq_len, vocab_size]
+```
+
+这样可以并行计算 loss，效率高。
+
+{IMAGE:13}
+
+### 2. 推理：只关心最后一个位置
+
+自回归生成时，每一步只需要预测下一个 token，因此只需要最后一个位置的 logits：
+
+```python
+logits = self.output(h[:, [-1], :])
+```
+
+这样输出形状是：
+
+$$
+[B, 1, V]
+$$
+
+而不是：
+
+$$
+[B, T, V]
+$$
+
+这样可以减少不必要计算和显存占用。
+
+```python
+if targets is None:
+    # 推理时只取最后一个 token 的 hidden state
+    logits = self.output(h[:, [-1], :])
+else:
+    # 训练时需要所有位置的 logits 来计算 loss
+    logits = self.output(h)
+```
+
+{WARNING}训练和推理的输出范围不同。训练需要所有位置的 logits，推理通常只需要最后一个位置的 logits。这个区别会影响显存、速度和后处理逻辑。{/WARNING}
+
+本节小结：训练阶段关注整个序列的监督信号，推理阶段关注最后一个 token 的下一个词预测。
+
+---
+
+## 九、KV Cache 与 start_pos
+
+### 1. 为什么需要 KV Cache
+
+在自回归生成中，模型每次生成一个 token。如果每一步都重新计算整段上下文的 K/V，会非常浪费。
+
+例如已经有：
+
+```text
+我 爱 自然
+```
+
+要生成下一个 token 时，如果重新计算“我”“爱”“自然”的 K/V，就会重复做大量工作。
+
+KV Cache 的思想是：
+
+- 历史 token 的 K/V 只计算一次
+- 后续步骤复用缓存
+- 新 token 只计算自己的 Q/K/V
+
+{IMAGE:14}
+
+### 2. start_pos 的作用
+
+`start_pos` 表示当前 token 在整段上下文中的起始位置。
+
+训练时：
+
+```python
+start_pos = 0
+```
+
+增量推理时：
+
+```python
+start_pos = 已经缓存的历史长度
+```
+
+例如：
+
+- 第一次输入 prompt 长度为 10，位置是 0 到 9
+- 下一步生成 token，`start_pos = 10`
+- 再下一步，`start_pos = 11`
+
+RoPE 和 KV Cache 都依赖这个位置。
+
+### 3. Attention 中的缓存更新
+
+简化逻辑如下：
+
+```python
+# xk, xv 是当前 step 新计算出来的 key/value
+self.cache_k[:batch_size, start_pos:start_pos + seq_len] = xk
+self.cache_v[:batch_size, start_pos:start_pos + seq_len] = xv
+
+# 取出从开头到当前位置的所有 key/value
+keys = self.cache_k[:batch_size, :start_pos + seq_len]
+values = self.cache_v[:batch_size, :start_pos + seq_len]
+```
+
+{KNOWLEDGE}KV Cache 是推理优化，不是训练必需品。训练时整段序列并行计算，一般不需要缓存历史 K/V。{/KNOWLEDGE}
+
+本节小结：`start_pos` 是连接 RoPE 位置编码和 KV Cache 的关键变量，保证增量生成时位置连续、缓存正确。
+
+---
+
+## 十、最终 Norm 与输出层
+
+### 1. Final RMSNorm
+
+经过多层 Transformer Block 后，hidden state 会进入最终归一化层：
+
+```python
+h = self.norm(h)
+```
+
+RMSNorm 的核心公式：
+
+$$
+\text{RMSNorm}(x) =
+\frac{x}{\sqrt{\frac{1}{d}\sum_{i=1}^{d}x_i^2 + \epsilon}}
+\odot w
+$$
+
+其中：
+
+- $d$ 是隐藏维度
+- $\epsilon$ 防止除零
+- $w$ 是可训练缩放参数
+
+{IMAGE:15}
+
+### 2. LM Head
+
+输出层将隐藏向量映射到词表大小：
+
+```python
+logits = self.output(h)
+```
+
+其数学形式是：
+
+$$
+z = hW^T
+$$
+
+其中：
+
+- $h \in \mathbb{R}^{B \times T \times C}$
+- $W \in \mathbb{R}^{V \times C}$
+- $z \in \mathbb{R}^{B \times T \times V}$
+
+### 3. 权重共享
+
+有些语言模型会让输入 embedding 和输出 head 共享权重：
+
+```python
+self.output.weight = self.tok_embeddings.weight
+```
+
+这样可以减少参数量，也常常有助于训练稳定。
+
+{WARNING}如果使用权重共享，必须保证 embedding 维度和 output 输入维度一致，否则无法共享同一个权重矩阵。{/WARNING}
+
+本节小结：最终 Norm 稳定输出分布，LM Head 把隐藏状态转换成词表预测。
+
+---
+
+## 十一、Loss 计算细节
+
+### 1. 为什么要 reshape
+
+`F.cross_entropy` 期望输入形状通常是：
+
+$$
+[N, C]
+$$
+
+标签形状是：
+
+$$
+[N]
+$$
+
+而语言模型 logits 是：
+
+$$
+[B, T, V]
+$$
+
+因此需要 reshape：
+
+```python
+logits = logits.view(-1, logits.size(-1))
+targets = targets.view(-1)
+```
+
+变成：
+
+$$
+[B \times T, V]
+$$
+
+和：
+
+$$
+[B \times T]
+$$
+
+{IMAGE:16}
+
+### 2. ignore_index
+
+训练数据中可能有 padding 或不参与 loss 的位置，可以用 `ignore_index` 忽略：
+
+```python
+loss = F.cross_entropy(
+    logits.view(-1, logits.size(-1)),
+    targets.view(-1),
+    ignore_index=-1
+)
+```
+
+如果某个 target 是 `-1`，该位置不会参与 loss 计算。
+
+{IMPORTANT}`ignore_index` 对小模型训练很实用。它允许我们在 batch 内对齐不同长度样本，同时不让 padding 位置污染训练目标。{/IMPORTANT}
+
+本节小结：loss 计算需要把 batch 和 sequence 维度展平，并通过 `ignore_index` 忽略无效标签。
+
+---
+
+## 十二、完整模型数据流回顾
+
+### 1. 从输入到输出
+
+完整 forward 可以按以下步骤理解：
+
+```text
+tokens
+  ↓
+Embedding
+  ↓
+Dropout
+  ↓
+TransformerBlock × n_layers
+  ↓
+RMSNorm
+  ↓
+Linear Head
+  ↓
+logits
+  ↓
+CrossEntropy Loss
+```
+
+{IMAGE:17}
+
+对应张量形状：
+
+```text
+tokens: [B, T]
+embedding: [B, T, C]
+hidden: [B, T, C]
+logits: [B, T, V]
+loss: scalar
+```
+
+### 2. 关键状态变量
+
+在完整模型中，几个变量尤其重要：
+
+- `tokens`：输入 token
+- `targets`：训练标签
+- `h`：hidden states
+- `freqs_cos/freqs_sin`：RoPE 位置参数
+- `start_pos`：当前序列起始位置
+- `logits`：词表预测分数
+- `loss`：训练损失
+
+{IMAGE:18}
+
+{KNOWLEDGE}阅读 Transformer 代码时，最重要的是跟踪张量形状。只要每一步的 shape 是合理的，模型结构通常就容易理解。{/KNOWLEDGE}
+
+本节小结：完整模型 forward 是一条清晰的数据流水线，理解 shape 变化是掌握实现的关键。
+
+---
+
+## 十三、训练样本的输入与标签构造
+
+### 1. 语言模型的 shift 关系
+
+训练语言模型时，输入和标签通常错开一位：
+
+```text
+原始文本 token:
+[我, 爱, PyTorch, 从, 零, 实现, 大模型]
+
+输入 tokens:
+[我, 爱, PyTorch, 从, 零, 实现]
+
+目标 targets:
+[爱, PyTorch, 从, 零, 实现, 大模型]
+```
+
+也就是：
+
+$$
+\text{targets}_t = \text{tokens}_{t+1}
+$$
+
+{IMAGE:19}
+
+### 2. 为什么这样训练
+
+因为自回归模型的任务是：
+
+$$
+P(x_1, x_2, ..., x_T)
+=
+\prod_{t=1}^{T}
+P(x_t \mid x_{<t})
+$$
+
+模型每个位置只能看到当前位置及之前的 token，然后预测下一个 token。
+
+### 3. Causal Mask
+
+为了防止模型偷看未来 token，Attention 中需要 causal mask。
+
+对于长度为 4 的序列，mask 结构类似：
+
+$$
+\begin{bmatrix}
+0 & -\infty & -\infty & -\infty \\
+0 & 0 & -\infty & -\infty \\
+0 & 0 & 0 & -\infty \\
+0 & 0 & 0 & 0
+\end{bmatrix}
+$$
+
+这样第 $t$ 个位置只能关注 $0$ 到 $t$ 的历史信息。
+
+{WARNING}如果 causal mask 写错，模型可能在训练中看到答案，loss 会异常好看，但推理能力会很差。{/WARNING}
+
+本节小结：语言模型训练依赖输入和标签错位，并通过 causal mask 保证只能利用历史上下文。
+
+---
+
+## 十四、模型初始化与工程细节
+
+### 1. 参数初始化
+
+模型初始化会影响训练稳定性。常见做法包括：
+
+```python
+def _init_weights(self, module):
+    if isinstance(module, nn.Linear):
+        torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        if module.bias is not None:
+            torch.nn.init.zeros_(module.bias)
+    elif isinstance(module, nn.Embedding):
+        torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+```
+
+然后在模型中调用：
+
+```python
+self.apply(self._init_weights)
+```
+
+{IMAGE:20}
+
+### 2. Dropout 的训练与推理差异
+
+Dropout 只在训练模式下生效：
+
+```python
+model.train()  # dropout 生效
+model.eval()   # dropout 关闭
+```
+
+这意味着同一个输入在训练时可能有随机扰动，在推理时则保持确定性。
+
+### 3. device 与 dtype
+
+模型实际训练时还需要注意：
+
+- 参数是否在 GPU 上
+- 输入 tokens 是否在同一 device
+- 混合精度训练时 dtype 是否一致
+- KV Cache 是否提前分配到正确设备
+
+```python
+tokens = tokens.to(device)
+model = model.to(device)
+```
+
+{WARNING}很多运行错误不是模型结构错，而是 device 或 dtype 不一致。例如参数在 GPU，输入还在 CPU，会直接报错。{/WARNING}
+
+本节小结：工程细节决定模型能否稳定训练，初始化、dropout、device、dtype 都需要认真处理。
+
+---
+
+## 十五、完整 Model 的典型实现骨架
+
+下面是一个更完整的结构化示例，展示 `Model` 如何组装各个模块。
 
 ```python
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 
-class MultiHeadAttention(nn.Module):
-    """多头注意力机制"""
-    
-    def __init__(self, d_model, num_heads, dropout=0.1):
+class MiniMindModel(nn.Module):
+    def __init__(self, config):
         super().__init__()
-        assert d_model % num_heads == 0, "d_model必须能被num_heads整除"
-        
-        self.d_model = d_model
-        self.num_heads = num_heads
-        self.d_k = d_model // num_heads
-        
-        # 线性投影层
-        self.W_q = nn.Linear(d_model, d_model)
-        self.W_k = nn.Linear(d_model, d_model)
-        self.W_v = nn.Linear(d_model, d_model)
-        self.W_o = nn.Linear(d_model, d_model)
-        
-        self.dropout = nn.Dropout(dropout)
-    
-    def forward(self, query, key, value, mask=None):
-        """
-        Args:
-            query: [batch_size, seq_len, d_model]
-            key: [batch_size, seq_len, d_model]
-            value: [batch_size, seq_len, d_model]
-            mask: 注意力掩码
-        Returns:
-            output: [batch_size, seq_len, d_model]
-            attention_weights: [batch_size, num_heads, seq_len, seq_len]
-        """
-        batch_size = query.size(0)
-        seq_len = query.size(1)
-        
-        # 线性投影并分头
-        Q = self.W_q(query).view(batch_size, seq_len, self.num_heads, self.d_k).transpose(1, 2)
-        K = self.W_k(key).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
-        V = self.W_v(value).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
-        
-        # 缩放点积注意力
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k)
-        
-        # 应用掩码
-        if mask is not None:
-            scores = scores.masked_fill(mask == 0, -1e9)
-        
-        attention_weights = F.softmax(scores, dim=-1)
-        attention_weights = self.dropout(attention_weights)
-        
-        # 计算输出
-        context = torch.matmul(attention_weights, V)
-        
-        # 合并多头结果
-        context = context.transpose(1, 2).contiguous().view(batch_size, seq_len, self.d_model)
-        output = self.W_o(context)
-        
-        return output, attention_weights
-```
+        self.config = config
+        self.vocab_size = config.vocab_size
+        self.n_layers = config.n_layers
 
-{IMAGE:7}
+        # 输入 token embedding
+        self.tok_embeddings = nn.Embedding(config.vocab_size, config.dim)
 
-{KNOWLEDGE}背景知识{/KNOWLEDGE}
+        # 多层 Decoder Block
+        self.layers = nn.ModuleList()
+        for layer_id in range(config.n_layers):
+            self.layers.append(TransformerBlock(layer_id, config))
 
-**三种注意力类型**：
-1. **自注意力（Self-Attention）**：$Q=K=V=X$，输入序列与自身的注意力
-2. **源注意力（Source Attention）**：编码器到解码器的注意力
-3. **掩码注意力（Masked Attention）**：解码器中防止看到未来信息
+        # 最终 RMSNorm
+        self.norm = RMSNorm(config.dim, eps=config.norm_eps)
 
----
+        # 语言模型输出头
+        self.output = nn.Linear(config.dim, config.vocab_size, bias=False)
 
-## 4. 前馈神经网络（Feed-Forward Network）
+        # dropout
+        self.dropout = nn.Dropout(config.dropout)
 
-{IMAGE:8}
+        # RoPE 预计算
+        self.freqs_cos, self.freqs_sin = precompute_freqs_cis(
+            config.dim // config.n_heads,
+            config.max_seq_len
+        )
 
-{IMPORTANT}核心概念{/IMPORTANT}
+        # 初始化参数
+        self.apply(self._init_weights)
 
-每个Transformer层包含一个Position-wise前馈网络，由两个线性变换组成，中间使用ReLU激活：
+    def _init_weights(self, module):
+        # 线性层和 embedding 使用正态分布初始化
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
 
-$$FFN(x) = \max(0, xW_1 + b_1)W_2 + b_2$$
+        if isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-### 4.1 FFN实现
+    def forward(self, tokens, targets=None, start_pos=0):
+        batch_size, seq_len = tokens.shape
 
-```python
-class PositionwiseFeedForward(nn.Module):
-    """位置-wise 前馈神经网络"""
-    
-    def __init__(self, d_model, d_ff, dropout=0.1):
-        super().__init__()
-        self.w_1 = nn.Linear(d_model, d_ff)
-        self.w_2 = nn.Linear(d_ff, d_model)
-        self.dropout = nn.Dropout(dropout)
-        self.activation = nn.ReLU()
-    
-    def forward(self, x):
-        return self.w_2(self.dropout(self.activation(self.w_1(x))))
-```
+        # token id -> hidden states
+        h = self.tok_embeddings(tokens)
+        h = self.dropout(h)
 
-{IMAGE:9}
+        # 当前序列对应的 RoPE 参数
+        freqs_cos = self.freqs_cos[start_pos:start_pos + seq_len]
+        freqs_sin = self.freqs_sin[start_pos:start_pos + seq_len]
 
-### 4.2 FFN的深入理解
-
-| 组件 | 维度 | 说明 |
-|------|------|------|
-| 输入 | $d_{model}=512$ | 与注意力层输出维度一致 |
-| 隐藏层 | $d_{ff}=2048$ | 4倍扩展，提供模型容量 |
-| 输出 | $d_{model}=512$ | 恢复原始维度 |
-| 激活函数 | ReLU/GELU | 引入非线性 |
-
----
-
-## 5. 层归一化与残差连接
-
-{IMAGE:10}
-
-{IMPORTANT}核心概念{/IMPORTANT}
-
-Transformer使用**Post-LN（Layer Normalization）**结构：
-
-$$\text{LayerNorm}(x + \text{Sublayer}(x))$$
-
-### 5.1 层归一化实现
-
-```python
-class LayerNorm(nn.Module):
-    """层归一化"""
-    
-    def __init__(self, features, eps=1e-6):
-        super().__init__()
-        self.gamma = nn.Parameter(torch.ones(features))
-        self.beta = nn.Parameter(torch.zeros(features))
-        self.eps = eps
-    
-    def forward(self, x):
-        mean = x.mean(-1, keepdim=True)
-        std = x.std(-1, keepdim=True)
-        return self.gamma * (x - mean) / (std + self.eps) + self.beta
-```
-
-{WARNING}易错点{/WARNING}
-
-**Pre-LN vs Post-LN**：
-- 原始Transformer使用Post-LN（归一化在残差连接之后）
-- 现代实现常使用Pre-LN（归一化在残差连接之前）
-- Pre-LN在训练稳定性上通常表现更好
-
----
-
-## 6. 编码器层实现
-
-{IMAGE:11}
-
-```python
-class EncoderLayer(nn.Module):
-    """Transformer编码器层"""
-    
-    def __init__(self, d_model, num_heads, d_ff, dropout=0.1):
-        super().__init__()
-        self.self_attention = MultiHeadAttention(d_model, num_heads, dropout)
-        self.feed_forward = PositionwiseFeedForward(d_model, d_ff, dropout)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.dropout1 = nn.Dropout(dropout)
-        self.dropout2 = nn.Dropout(dropout)
-    
-    def forward(self, x, mask=None):
-        # 自注意力 + 残差连接
-        attn_output, _ = self.self_attention(x, x, x, mask)
-        x = self.norm1(x + self.dropout1(attn_output))
-        
-        # 前馈网络 + 残差连接
-        ff_output = self.feed_forward(x)
-        x = self.norm2(x + self.dropout2(ff_output))
-        
-        return x
-
-
-class Encoder(nn.Module):
-    """Transformer编码器"""
-    
-    def __init__(self, num_layers, d_model, num_heads, d_ff, dropout=0.1):
-        super().__init__()
-        self.layers = nn.ModuleList([
-            EncoderLayer(d_model, num_heads, d_ff, dropout)
-            for _ in range(num_layers)
-        ])
-        self.norm = nn.LayerNorm(d_model)
-    
-    def forward(self, x, mask=None):
+        # 逐层通过 Transformer
         for layer in self.layers:
-            x = layer(x, mask)
-        return self.norm(x)
+            h = layer(h, freqs_cos, freqs_sin, start_pos)
+
+        # 最终归一化
+        h = self.norm(h)
+
+        # 训练时输出所有位置；推理时只输出最后一个位置
+        if targets is not None:
+            logits = self.output(h)
+            loss = F.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                targets.view(-1),
+                ignore_index=-1
+            )
+        else:
+            logits = self.output(h[:, [-1], :])
+            loss = None
+
+        return logits, loss
 ```
+
+{IMAGE:21}
+
+本节小结：完整 Model 类把 embedding、blocks、norm、head、loss、RoPE、推理优化统一封装起来，是训练脚本和推理脚本调用的核心对象。
 
 ---
 
-## 7. 解码器层实现
+## 十六、从 Model 到训练闭环
 
-{IMAGE:12}
+### 1. 一次训练 step
 
-```python
-class DecoderLayer(nn.Module):
-    """Transformer解码器层"""
-    
-    def __init__(self, d_model, num_heads, d_ff, dropout=0.1):
-        super().__init__()
-        self.self_attention = MultiHeadAttention(d_model, num_heads, dropout)
-        self.cross_attention = MultiHeadAttention(d_model, num_heads, dropout)
-        self.feed_forward = PositionwiseFeedForward(d_model, d_ff, dropout)
-        
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.norm3 = nn.LayerNorm(d_model)
-        
-        self.dropout1 = nn.Dropout(dropout)
-        self.dropout2 = nn.Dropout(dropout)
-        self.dropout3 = nn.Dropout(dropout)
-    
-    def forward(self, x, encoder_output, src_mask=None, tgt_mask=None):
-        # 自注意力（掩码）
-        attn1, _ = self.self_attention(x, x, x, tgt_mask)
-        x = self.norm1(x + self.dropout1(attn1))
-        
-        # 交叉注意力（编码器-解码器）
-        attn2, _ = self.cross_attention(x, encoder_output, encoder_output, src_mask)
-        x = self.norm2(x + self.dropout2(attn2))
-        
-        # 前馈网络
-        ff_output = self.feed_forward(x)
-        x = self.norm3(x + self.dropout3(ff_output))
-        
-        return x
-
-
-class Decoder(nn.Module):
-    """Transformer解码器"""
-    
-    def __init__(self, num_layers, d_model, num_heads, d_ff, dropout=0.1):
-        super().__init__()
-        self.layers = nn.ModuleList([
-            DecoderLayer(d_model, num_heads, d_ff, dropout)
-            for _ in range(num_layers)
-        ])
-        self.norm = nn.LayerNorm(d_model)
-    
-    def forward(self, x, encoder_output, src_mask=None, tgt_mask=None):
-        for layer in self.layers:
-            x = layer(x, encoder_output, src_mask, tgt_mask)
-        return self.norm(x)
-```
-
-### 7.1 解码器掩码机制
+有了完整模型后，训练循环就可以写成：
 
 ```python
-def create_padding_mask(seq, pad_idx=0):
-    """创建填充掩码"""
-    return (seq != pad_idx).unsqueeze(1).unsqueeze(2)
+model.train()
 
-def create_look_ahead_mask(size):
-    """创建前瞻掩码（防止看到未来信息）"""
-    mask = torch.triu(torch.ones(size, size), diagonal=1).type(torch.uint8)
-    return mask == 0
+logits, loss = model(tokens, targets)
 
-def create_combined_mask(tgt):
-    """组合掩码：填充掩码 + 前瞻掩码"""
-    padding_mask = create_padding_mask(tgt)
-    look_ahead_mask = create_look_ahead_mask(tgt.size(1))
-    combined_mask = look_ahead_mask & padding_mask
-    return combined_mask
+optimizer.zero_grad()
+loss.backward()
+optimizer.step()
 ```
+
+完整训练过程包括：
+
+1. 前向传播得到 loss
+2. 反向传播计算梯度
+3. 优化器更新参数
+4. 重复大量 batch
+
+### 2. 一次推理 step
+
+推理时通常：
+
+```python
+model.eval()
+
+with torch.no_grad():
+    logits, _ = model(tokens, start_pos=start_pos)
+    next_token_logits = logits[:, -1, :]
+    next_token = torch.argmax(next_token_logits, dim=-1)
+```
+
+如果使用采样，还可以加入：
+
+- temperature
+- top-k
+- top-p
+- repetition penalty
+
+{IMAGE:22}
+
+### 3. 训练和推理的统一接口
+
+一个设计良好的 `Model` 类通常可以同时服务训练和推理：
+
+- 有 `targets`：计算训练 loss
+- 无 `targets`：返回推理 logits
+- 有 `start_pos`：支持 KV Cache 增量生成
+
+{IMPORTANT}好的模型实现应该让训练脚本和推理脚本都能自然调用，而不是为训练和推理写两套完全割裂的模型代码。{/IMPORTANT}
+
+本节小结：Model 是训练闭环和推理闭环的共同核心，forward 的设计直接影响后续工程复杂度。
 
 ---
 
-## 8. 完整Transformer模型组装
+## 十七、常见易错点总结
 
-```python
-class Transformer(nn.Module):
-    """完整的Transformer模型"""
-    
-    def __init__(
-        self,
-        src_vocab_size,
-        tgt_vocab_size,
-        d_model=512,
-        num_heads=8,
-        num_encoder_layers=6,
-        num_decoder_layers=6,
-        d_ff=2048,
-        dropout=0.1,
-        max_len=5000
-    ):
-        super().__init__()
-        
-        # 嵌入层
-        self.src_embedding = nn.Embedding(src_vocab_size, d_model)
-        self.tgt_embedding = nn.Embedding(tgt_vocab_size, d_model)
-        
-        # 位置编码
-        self.pos_encoder = PositionalEncoding(d_model, max_len, dropout)
-        self.pos_decoder = PositionalEncoding(d_model, max_len, dropout)
-        
-        # 编码器和解码器
-        self.encoder = Encoder(num_encoder_layers, d_model, num_heads, d_ff, dropout)
-        self.decoder = Decoder(num_decoder_layers, d_model, num_heads, d_ff, dropout)
-        
-        # 输出投影层
-        self.output_proj = nn.Linear(d_model, tgt_vocab_size)
-        
-        # 缩放因子
-        self.d_model = d_model
-        self._init_weights()
-    
-    def _init_weights(self):
-        """权重初始化"""
-        for p in self.parameters():
-            if p.dim() > 1:
-                nn.init.xavier_uniform_(p)
-    
-    def forward(self, src, tgt, src_mask=None, tgt_mask=None):
-        # 源序列编码
-        src_emb = self.pos_encoder(self.src_embedding(src) * math.sqrt(self.d_model))
-        encoder_output = self.encoder(src_emb, src_mask)
-        
-        # 目标序列解码
-        tgt_emb = self.pos_decoder(self.tgt_embedding(tgt) * math.sqrt(self.d_model))
-        decoder_output = self.decoder(tgt_emb, encoder_output, src_mask, tgt_mask)
-        
-        # 投影到词汇表
-        output = self.output_proj(decoder_output)
-        
-        return output
+### 1. shape 错误
+
+最常见的问题是张量维度不匹配，例如：
+
+- logits 没有 reshape 就传给 cross entropy
+- hidden dim 和 head dim 不匹配
+- RoPE 维度和 Q/K 维度不一致
+- 推理时只取最后 token 后 shape 处理错误
+
+### 2. start_pos 错误
+
+增量推理中，如果 `start_pos` 没有正确递增，会导致：
+
+- RoPE 位置错乱
+- KV Cache 覆盖错误
+- 输出质量明显下降
+
+### 3. mask 错误
+
+如果 causal mask 失效，模型训练 loss 可能下降很快，但推理表现异常。
+
+### 4. device 错误
+
+例如：
+
+```text
+Expected all tensors to be on the same device
 ```
 
-### 8.1 模型参数统计
+通常说明输入、模型参数、RoPE 缓存或 KV Cache 不在同一个设备上。
 
-| 组件 | 参数量 | 占比 |
-|------|--------|------|
-| 嵌入层 | $V \times d_{model} \times 2$ | ~20% |
-| 注意力层 | $4 \times d_{model}^2 \times h$ | ~40% |
-| 前馈网络 | $2 \times d_{model} \times d_{ff}$ | ~35% |
-| 归一化层 | $2 \times d_{model}$ | <1% |
+{WARNING}Transformer 实现调试时，不要只看 loss。还要检查 shape、mask、位置编码、缓存和推理输出是否符合预期。{/WARNING}
+
+{IMAGE:4}
+
+本节小结：完整模型的问题往往不是单个模块错，而是多个模块之间接口没有对齐。
 
 ---
 
-## 9. 训练与推理流程
+## 十八、本集关键收获
 
-### 9.1 训练阶段
+### Key Takeaways
 
-```python
-def train_step(model, optimizer, criterion, src, tgt):
-    model.train()
-    
-    # 创建掩码
-    src_mask = create_padding_mask(src)
-    tgt_mask = create_combined_mask(tgt)
-    
-    # 前向传播
-    output = model(src, tgt[:, :-1], src_mask, tgt_mask)
-    
-    # 计算损失
-    loss = criterion(
-        output.reshape(-1, output.size(-1)),
-        tgt[:, 1:].reshape(-1)
-    )
-    
-    # 反向传播
-    loss.backward()
-    optimizer.step()
-    optimizer.zero_grad()
-    
-    return loss.item()
-```
+1. MiniMind 的 `Model` 是一个 Decoder-only Transformer，由 embedding、多层 block、final norm 和 lm head 组成。
+2. 输入 token 形状是 $[B,T]$，经过 embedding 后变为 $[B,T,C]$。
+3. 模型输出 logits 形状是 $[B,T,V]$，其中 $V$ 是词表大小。
+4. 训练时需要所有位置的 logits 来计算交叉熵 loss。
+5. 推理时通常只需要最后一个位置的 logits，用于生成下一个 token。
+6. RoPE 通过旋转 Q/K 注入位置信息，`start_pos` 对增量推理非常关键。
+7. KV Cache 可以避免重复计算历史 token 的 K/V，是自回归推理加速的核心。
+8. 完整模型实现的重点不是某一个模块，而是模块之间的 shape、位置、缓存、loss 逻辑都要对齐。
 
-### 9.2 推理阶段（Greedy Decoding）
+### 思考题
 
-```python
-def greedy_decode(model, src, max_len, start_token, end_token, src_mask=None):
-    model.eval()
-    
-    # 编码源序列
-    src_emb = model.pos_encoder(model.src_embedding(src) * math.sqrt(model.d_model))
-    encoder_output = model.encoder(src_emb, src_mask)
-    
-    # 解码
-    decoder_input = torch.tensor([[start_token]], device=src.device)
-    
-    for _ in range(max_len):
-        tgt_emb = model.pos_decoder(model.tgt_embedding(decoder_input) * math.sqrt(model.d_model))
-        decoder_output = model.decoder(tgt_emb, encoder_output, src_mask, None)
-        output = model.output_proj(decoder_output)
-        
-        # 选择概率最高的token
-        next_token = output[:, -1, :].argmax(dim=-1, keepdim=True)
-        decoder_input = torch.cat([decoder_input, next_token], dim=1)
-        
-        if next_token.item() == end_token:
-            break
-    
-    return decoder_input
-```
-
----
-
-## 10. 代码整合与测试
-
-```python
-# 模型配置
-config = {
-    'src_vocab_size': 10000,
-    'tgt_vocab_size': 10000,
-    'd_model': 512,
-    'num_heads': 8,
-    'num_encoder_layers': 6,
-    'num_decoder_layers': 6,
-    'd_ff': 2048,
-    'dropout': 0.1,
-    'max_len': 200
-}
-
-# 创建模型
-model = Transformer(**config)
-
-# 统计参数量
-total_params = sum(p.numel() for p in model.parameters())
-trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-print(f"总参数量: {total_params:,}")
-print(f"可训练参数: {trainable_params:,}")
-
-# 测试前向传播
-batch_size = 4
-src_seq_len = 50
-tgt_seq_len = 30
-
-src = torch.randint(0, config['src_vocab_size'], (batch_size, src_seq_len))
-tgt = torch.randint(0, config['tgt_vocab_size'], (batch_size, tgt_seq_len))
-
-output = model(src, tgt)
-print(f"输出形状: {output.shape}")  # [batch_size, tgt_seq_len, tgt_vocab_size]
-```
-
----
-
-## 课程总结
-
-{IMPORTANT}核心要点{/IMPORTANT}
-
-1. **Transformer由编码器和解码器组成**，每部分包含多层堆叠的自注意力层和前馈网络
-
-2. **位置编码**通过正弦余弦函数注入序列位置信息，使模型能够区分不同位置的token
-
-3. **多头注意力**将注意力分散到多个子
+1. 为什么训练时可以一次性并行计算整个序列，而推理时通常要一个 token 一个 token 地生成？
+2. 如果推理时 `start_pos` 始终写成 0，会对 RoPE 和 KV Cache 造成什么影响？
+3. 训练 loss 很低但推理结果很差时，应该优先检查 causal mask、数据构造还是模型参数量？为什么？

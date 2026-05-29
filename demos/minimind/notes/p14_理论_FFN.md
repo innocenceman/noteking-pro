@@ -1,383 +1,714 @@
 # 第14集: 理论：FFN
 
-# 第十四讲：理论 · 前馈网络（FFN）与 SwiGLU 激活函数
+## 课程概览
 
-**课程**：MiniMind - PyTorch从零手敲大模型  
-**课时**：第14/26讲 · 时长 6分16秒  
-**关键词**：前馈神经网络、SwiGLU、Swish、GELU、门控线性单元
-
----
-
-## 1. 课程概述与学习目标
+本集是 MiniMind 第 14/26 集，主题是 **理论：FFN**，重点讲解 Transformer 中的 **前馈网络 Feed Forward Network, FFN**，以及现代大模型中常用的 **SwiGLU 激活函数**。
 
 {IMAGE:1}
 
-本讲将深入剖析 **Transformer 架构中的前馈神经网络（Feed-Forward Network, FFN）** 模块，这是现代大语言模型的核心组件之一。我们将重点学习：
+在 Transformer Block 中，除了注意力机制外，FFN 是另一个核心计算模块。注意力机制主要负责 **token 之间的信息交互**，而 FFN 更多负责对每个 token 的表示进行 **逐位置的非线性变换与特征加工**。
 
-- FFN 在 Transformer 中的定位与作用
-- 从传统 GELU 激活到 SwiGLU 的演进历程
-- SwiGLU 激活函数的数学原理与实现
-- PyTorch 代码层面的完整实现
+{IMPORTANT}  
+FFN 可以理解为 Transformer 中对每个 token 独立执行的“小型多层感知机”。它不混合不同 token 的信息，而是在隐藏维度上扩展、激活、压缩，从而增强模型表达能力。  
+{/IMPORTANT}
 
-{KNOWLEDGE}学习背景{/KNOWLEDGE}
-本讲承接前几讲对 Transformer 架构的整体介绍，要求读者具备：
-- 基本的矩阵运算与线性代数知识
-- Python/PyTorch 编程基础
-- 对深度学习中"激活函数"概念的初步理解
+本节笔记围绕以下内容展开：
+
+- FFN 在 Transformer Block 中的位置
+- 标准 FFN 的结构
+- 为什么 FFN 通常先升维再降维
+- 激活函数在 FFN 中的作用
+- SwiGLU 的结构与公式
+- MiniMind 中 FFN 的 PyTorch 实现思路
+
+本节小结：FFN 是 Transformer 中与 Attention 并列的重要模块，负责对 token 表示做非线性加工，是大模型能力的重要来源之一。
 
 ---
 
-## 2. FFN 在 Transformer 中的角色
+## FFN 在 Transformer 中的位置
 
 {IMAGE:2}
 
-### 2.1 Transformer 架构回顾
+一个典型的 Transformer Block 通常包含两个主要子模块：
 
-在标准的 Transformer 编码器或解码器层中，每个注意力子层之后都会接一个 **前馈网络子层**。这一设计最早出现在 Google 的经典论文 *"Attention Is All You Need"* 中。
+1. Multi-Head Self-Attention
+2. Feed Forward Network
 
-{WARNING}常见误区{/WARNING}
-许多初学者认为注意力机制（Attention）是最重要的部分，而将 FFN 视为"配角"。实际上，在 Transformer 的参数分布中，**FFN 通常占据了整个模型约 2/3 的参数**，是名副其实的"参数量担当"。
+常见结构可以写成：
 
-### 2.2 FFN 的数学定义
+$$
+x = x + \text{Attention}(\text{Norm}(x))
+$$
 
-标准 FFN 的计算可以表示为：
-
-$$\text{FFN}(x) = \max(0, xW_1 + b_1)W_2 + b_2$$
+$$
+x = x + \text{FFN}(\text{Norm}(x))
+$$
 
 其中：
-- $x \in \mathbb{R}^{d_{\text{model}}}$ 是输入向量
-- $W_1 \in \mathbb{R}^{d_{\text{model}} \times d_{\text{ff}}}$, $W_2 \in \mathbb{R}^{d_{\text{ff}} \times d_{\text{model}}}$ 是权重矩阵
-- $d_{\text{ff}}$ 是 FFN 隐藏层的维度，通常设为 $d_{\text{model}} \times 4$
+
+- $x$ 表示输入的 token hidden states
+- Norm 通常是 LayerNorm 或 RMSNorm
+- Attention 负责 token 间交互
+- FFN 负责每个 token 内部表示的非线性变换
+- 残差连接用于稳定训练和保留原始信息
 
 {IMAGE:3}
 
-### 2.3 FFN 的结构图示
+从计算角度看，如果输入张量形状是：
 
-{IMAGE:4}
+$$
+x \in \mathbb{R}^{B \times T \times C}
+$$
 
-如图所示，经典 FFN 由两个线性层组成，中间夹着一个非线性激活函数（传统上使用 ReLU 或 GELU）。这种"先扩展后压缩"的设计让模型能够在更高维度的空间中进行非线性变换。
+其中：
 
-{IMPORTANT}核心概念{/IMPORTANT}
-FFN 的本质是一个两层感知机（MLP），但它与注意力机制是**并行工作**的——每个位置的 token 独立地通过相同的 FFN 进行变换，这也是 FFN 区别于卷积层和循环层的重要特征。
+- $B$ 是 batch size
+- $T$ 是序列长度
+- $C$ 是 hidden size，也叫 embedding dimension
+
+FFN 会对每个位置上的 $C$ 维向量独立进行相同的变换：
+
+$$
+\text{FFN}(x_{b,t}) = f(x_{b,t})
+$$
+
+这里的 $f$ 是一个共享的前馈网络。
+
+{KNOWLEDGE}  
+FFN 不会直接在序列维度 $T$ 上做混合。也就是说，第 1 个 token 的 FFN 输出只依赖第 1 个 token 在 Attention 后的表示，不直接依赖其他 token。token 间的信息已经由 Attention 完成传递。  
+{/KNOWLEDGE}
+
+本节小结：Attention 解决 token 间的信息流动，FFN 解决每个 token 表示本身的特征变换，两者共同构成 Transformer Block 的主体。
 
 ---
 
-## 3. 从 ReLU 到 GELU：激活函数的演进
+## 标准 FFN 结构
 
 {IMAGE:5}
 
-### 3.1 ReLU 的局限性
+最经典的 Transformer FFN 通常由两层线性层和一个非线性激活函数组成：
 
-早期 Transformer（如原始的 BERT、GPT-2）使用 ReLU 作为 FFN 的激活函数：
+$$
+\text{FFN}(x) = W_2 \cdot \sigma(W_1 x + b_1) + b_2
+$$
 
-$$\text{ReLU}(x) = \max(0, x)$$
+其中：
 
-ReLU 的问题在于：
-- **梯度稀疏**：负半轴梯度为 0，可能导致"死神经元"
-- **无负值输出**：无法处理负相关的特征
-- **非平滑**：在 0 处不可导
+- $W_1$：第一层线性映射
+- $W_2$：第二层线性映射
+- $\sigma$：激活函数，例如 ReLU、GELU、SiLU
+- $b_1, b_2$：偏置项，部分现代大模型会省略 bias
 
-### 3.2 GELU：高斯误差线性单元
+如果 hidden size 为 $d$，中间层维度为 $d_{ff}$，则：
+
+$$
+W_1: d \rightarrow d_{ff}
+$$
+
+$$
+W_2: d_{ff} \rightarrow d
+$$
+
+因此 FFN 的整体结构是：
+
+$$
+d \rightarrow d_{ff} \rightarrow d
+$$
 
 {IMAGE:6}
 
-2016年，Hendrycks 和 Gimpel 提出了 **GELU（Gaussian Error Linear Unit）**，它结合了 ReLU 的线性特性和 Dropout 的随机正则化：
+在很多 Transformer 模型中，$d_{ff}$ 通常设置为 $4d$。例如：
 
-$$\text{GELU}(x) = x \cdot \Phi(x)$$
+- hidden size $d = 512$
+- FFN 中间维度 $d_{ff} = 2048$
 
-其中 $\Phi(x)$ 是标准正态分布的累积分布函数（CDF）。
+这意味着模型会先把 token 表示从 512 维扩展到 2048 维，在更高维空间中进行非线性加工，再压缩回 512 维。
+
+{IMPORTANT}  
+FFN 的“升维-激活-降维”结构，是 Transformer 增强表达能力的重要设计。升维提供更大的特征空间，激活函数引入非线性，降维保证输出形状与残差连接兼容。  
+{/IMPORTANT}
+
+本节小结：标准 FFN 是两层 MLP，典型结构为 hidden size 升维到 intermediate size，再降回 hidden size。
+
+---
+
+## 为什么 FFN 要先升维再降维
 
 {IMAGE:7}
 
-GELU 可以近似为：
+如果 FFN 只是一个线性层：
 
-$$\text{GELU}(x) \approx 0.5x \left(1 + \tanh\left[\sqrt{\frac{2}{\pi}}(x + 0.044715x^3)\right]\right)$$
+$$
+y = Wx
+$$
 
-{KNOWLEDGE}为什么 GELU 更优？{/KNOWLEDGE}
-- **自适应门控**：输入乘以 0~1 之间的概率权重，实现软性的"开/关"
-- **平滑连续**：处处可导，便于梯度流动
-- **与 Dropout 兼容**：两者的随机性有协同作用
+那么无论堆叠多少线性层，本质上仍然可以合并成一个线性变换：
 
-BERT、GPT-2、RoBERTa 等主流模型都采用了 GELU 激活。
+$$
+W_2(W_1x) = (W_2W_1)x
+$$
 
----
+这会严重限制模型的表达能力。
 
-## 4. SwiGLU 激活函数详解
+所以 FFN 中必须加入激活函数：
+
+$$
+y = W_2 \sigma(W_1x)
+$$
+
+激活函数让模型能够表达复杂的非线性映射。
 
 {IMAGE:8}
 
-### 4.1 Swish 激活函数
+升维的意义可以从特征空间角度理解。原始 token 表示可能是 $d$ 维，在更高的 $d_{ff}$ 维空间中，模型可以学习到更多中间特征：
 
-Swish 由 Prajit Ramachandran 等人在 2017 年提出：
+$$
+h = W_1x
+$$
 
-$$\text{Swish}(x) = x \cdot \sigma(x)$$
+$$
+h \in \mathbb{R}^{d_{ff}}
+$$
 
-其中 $\sigma(x)$ 是 Sigmoid 函数。
+然后通过激活函数筛选、调制这些特征：
 
-{IMAGE:9}
+$$
+a = \sigma(h)
+$$
 
-Swish 的特点：
-- **自门控**：输入本身作为门控信号
-- **负值保留**：可以输出负值，允许特征抑制
-- **可学习**：门控权重随输入动态调整
+最后再映射回原始 hidden size：
 
-### 4.2 GLU：门控线性单元
+$$
+y = W_2a
+$$
 
-{IMAGE:10}
+{WARNING}  
+不要把 FFN 理解成“改变序列长度”的模块。FFN 改变的是每个 token 的隐藏特征维度，中间会升维，但最终输出维度仍然回到 hidden size。  
+{/WARNING}
 
-**GLU（Gated Linear Unit）** 源自 2017 年的论文 *"Language Modeling with Gated Convolutional Networks"*，其核心思想是引入一个"门"来控制信息流动：
-
-$$\text{GLU}(x) = \sigma(xW + b) \otimes (xV + c)$$
-
-其中：
-- $\otimes$ 表示逐元素乘法（Element-wise Product）
-- $\sigma$ 是 Sigmoid 门控函数
-- $W, V$ 是独立的线性变换矩阵
-
-{IMPORTANT}核心概念{/IMPORTANT}
-GLU 的关键在于：门控信号 $\sigma(xW + b)$ 控制了多少信息可以通过 $(xV + c)$ 传递。这类似于 LSTM 中的遗忘门和输入门，但实现更加简洁高效。
-
-### 4.3 SwiGLU：Swish 与 GLU 的融合
-
-{IMAGE:11}
-
-**SwiGLU** 将 Swish 作为 GLU 的门控函数：
-
-$$\text{SwiGLU}(x) = \text{Swish}_\beta(xW_1) \otimes (xW_2)$$
-
-其中：
-
-$$\text{Swish}_\beta(x) = x \cdot \sigma(\beta x)$$
-
-当 $\beta = 1$ 时，就是标准的 Swish。
-
-标准 SwiGLU 实现（Shengding Hu 等人在 LLaMA 中使用）：
-
-$$\text{SwiGLU}(x) = \text{Swish}(xW_1) \otimes (xW_2 + b_2)$$
-
-### 4.4 SwiGLU 的优势
-
-{IMAGE:12}
-
-| 特性 | ReLU | GELU | SwiGLU |
-|------|------|------|--------|
-| 平滑性 | ❌ | ✅ | ✅ |
-| 可学习门控 | ❌ | ❌ | ✅ |
-| 负值处理 | 截断 | 保留 | 保留 |
-| 计算复杂度 | 低 | 中 | 中高 |
-| 主流模型采用 | 早期 | BERT, GPT-2 | LLaMA, LLaMA-2, Vicuna |
-
-{KNOWLEDGE}为什么 SwiGLU 表现更好？{/KNOWLEDGE}
-1. **双重非线性**：Swish 本身是非线性的，再加上逐元素乘法的交互作用
-2. **动态路由**：门控机制让模型自适应决定保留或抑制每个特征
-3. **参数效率**：三个线性层（W1, W2, W3）比单一的大 FFN 更高效
+本节小结：FFN 先升维是为了获得更丰富的中间特征空间，激活函数负责引入非线性，最后降维是为了匹配 Transformer Block 的残差结构。
 
 ---
 
-## 5. PyTorch 实现
+## 激活函数的作用
 
-### 5.1 标准 FFN 实现
+{IMAGE:9}
+
+激活函数是 FFN 中的关键组成部分。没有激活函数，FFN 就只是线性变换，表达能力不足。
+
+常见激活函数包括：
+
+### ReLU
+
+$$
+\text{ReLU}(x) = \max(0, x)
+$$
+
+特点：
+
+- 计算简单
+- 正数保留，负数置零
+- 曾经广泛用于早期神经网络
+
+缺点：
+
+- 负半轴梯度为 0
+- 可能出现神经元“死亡”问题
+
+### GELU
+
+$$
+\text{GELU}(x) = x \cdot \Phi(x)
+$$
+
+其中 $\Phi(x)$ 是标准正态分布的累积分布函数。
+
+GELU 在 BERT、GPT 等模型中非常常见。它不是简单地截断负数，而是根据输入大小进行平滑加权。
+
+### SiLU / Swish
+
+$$
+\text{SiLU}(x) = x \cdot \sigma(x)
+$$
+
+其中：
+
+$$
+\sigma(x) = \frac{1}{1 + e^{-x}}
+$$
+
+SiLU 的特点是平滑、可导，并且在很多深度模型中表现良好。
+
+{IMAGE:10}
+
+{KNOWLEDGE}  
+现代大模型中，激活函数不仅仅是“加一个非线性”。它还会影响梯度传播、训练稳定性、特征选择方式和最终模型性能。  
+{/KNOWLEDGE}
+
+本节小结：激活函数让 FFN 具备非线性表达能力，现代语言模型通常使用 GELU、SiLU 或 GLU 变体。
+
+---
+
+## GLU：门控线性单元
+
+{IMAGE:11}
+
+在理解 SwiGLU 前，需要先理解 GLU，Gate Linear Unit，门控线性单元。
+
+普通 FFN 可以写成：
+
+$$
+\text{FFN}(x) = W_2 \sigma(W_1x)
+$$
+
+而 GLU 引入了一个“门控分支”：
+
+$$
+\text{GLU}(x) = (xW_a) \otimes \sigma(xW_b)
+$$
+
+其中：
+
+- $W_a$ 是值分支
+- $W_b$ 是门控分支
+- $\sigma$ 是 sigmoid 激活
+- $\otimes$ 表示逐元素相乘
+
+直观理解：
+
+- 一个分支生成候选特征
+- 另一个分支生成门控权重
+- 门控权重决定哪些特征应该被保留或抑制
+
+{IMAGE:12}
+
+这类似于给特征加了一个“开关”：
+
+$$
+\text{output feature} = \text{candidate feature} \times \text{gate value}
+$$
+
+如果 gate 接近 1，该特征被保留；如果 gate 接近 0，该特征被压制。
+
+{IMPORTANT}  
+GLU 类激活的核心思想是：不是简单对特征做激活，而是用一个分支控制另一个分支的信息流动。  
+{/IMPORTANT}
+
+本节小结：GLU 通过门控机制增强了 FFN 的表达能力，为 SwiGLU 奠定了基础。
+
+---
+
+## SwiGLU 激活函数
+
+{IMAGE:13}
+
+SwiGLU 是 GLU 的一种变体，它把 GLU 中的 sigmoid 门控替换为 Swish/SiLU 风格的激活。
+
+常见形式如下：
+
+$$
+\text{SwiGLU}(x) = \text{SiLU}(xW_1) \otimes (xW_3)
+$$
+
+然后再经过输出投影：
+
+$$
+\text{FFN}(x) = W_2 \left( \text{SiLU}(xW_1) \otimes xW_3 \right)
+$$
+
+也可以写作：
+
+$$
+\text{FFN}(x) = W_{down} \left( \text{SiLU}(W_{gate}x) \otimes W_{up}x \right)
+$$
+
+其中：
+
+- $W_{gate}$：门控投影
+- $W_{up}$：升维投影
+- $W_{down}$：降维投影
+- $\otimes$：逐元素乘法
+- SiLU 是激活函数
+
+{IMAGE:14}
+
+在很多 LLaMA 类模型中，FFN 通常使用类似结构：
 
 ```python
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class StandardFFN(nn.Module):
-    """
-    标准 FFN 实现（ReLU/GELU）
-    对应原始 Transformer 架构
-    """
-    def __init__(self, d_model: int, d_ff: int, dropout: float = 0.1):
+class FeedForward(nn.Module):
+    def __init__(self, dim, hidden_dim):
         super().__init__()
-        self.d_model = d_model
-        self.d_ff = d_ff
-        
-        # 第一个线性层：扩展维度
-        self.w1 = nn.Linear(d_model, d_ff, bias=True)
-        # 第二个线性层：压缩回原维度
-        self.w2 = nn.Linear(d_ff, d_model, bias=True)
-        self.dropout = nn.Dropout(dropout)
-        
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: [batch_size, seq_len, d_model] 或 [batch_size, d_model]
-        Returns:
-            [batch_size, seq_len, d_model] 或 [batch_size, d_model]
-        """
-        # 扩展 -> 激活 -> Dropout -> 压缩
-        return self.w2(self.dropout(F.gelu(self.w1(x))))
+        # gate_proj: 生成门控分支
+        self.gate_proj = nn.Linear(dim, hidden_dim, bias=False)
+
+        # up_proj: 生成候选特征分支
+        self.up_proj = nn.Linear(dim, hidden_dim, bias=False)
+
+        # down_proj: 将中间维度映射回 hidden size
+        self.down_proj = nn.Linear(hidden_dim, dim, bias=False)
+
+    def forward(self, x):
+        # gate 分支经过 SiLU 激活
+        gate = F.silu(self.gate_proj(x))
+
+        # up 分支提供被调制的候选特征
+        up = self.up_proj(x)
+
+        # 逐元素相乘完成门控
+        hidden = gate * up
+
+        # 降维回原始 hidden size
+        return self.down_proj(hidden)
 ```
 
-### 5.2 SwiGLU FFN 实现
+这段代码对应公式：
+
+$$
+y = W_{down}(\text{SiLU}(W_{gate}x) \otimes W_{up}x)
+$$
+
+{WARNING}  
+SwiGLU 中通常有三组线性权重：gate projection、up projection、down projection。不要误以为它仍然只有传统 FFN 的两层线性层。  
+{/WARNING}
+
+本节小结：SwiGLU 是一种带门控的 FFN 结构，通过 SiLU 激活分支与 up 分支逐元素相乘，再降维输出。
+
+---
+
+## SwiGLU 与普通 FFN 的区别
+
+{IMAGE:15}
+
+普通 FFN：
+
+$$
+y = W_2 \sigma(W_1x)
+$$
+
+SwiGLU FFN：
+
+$$
+y = W_{down}(\text{SiLU}(W_{gate}x) \otimes W_{up}x)
+$$
+
+主要区别如下：
+
+| 对比项 | 普通 FFN | SwiGLU FFN |
+|---|---|---|
+| 线性层数量 | 2 个 | 3 个 |
+| 中间结构 | 单分支 | 双分支门控 |
+| 激活方式 | 对单分支激活 | gate 分支激活后调制 up 分支 |
+| 表达能力 | 较强 | 通常更强 |
+| 常见模型 | Transformer 原始结构、BERT/GPT 早期模型 | LLaMA、PaLM 等现代大模型 |
+
+{IMAGE:16}
+
+从直觉上看，普通 FFN 是：
+
+$$
+\text{生成特征} \rightarrow \text{激活} \rightarrow \text{输出}
+$$
+
+而 SwiGLU 是：
+
+$$
+\text{生成候选特征} + \text{生成门控信号} \rightarrow \text{逐元素调制} \rightarrow \text{输出}
+$$
+
+这让模型不仅能生成特征，还能学习“哪些特征在当前上下文中更重要”。
+
+{KNOWLEDGE}  
+虽然 FFN 本身不直接混合 token，但它处理的是 Attention 后的 token 表示。因此每个 token 的向量中已经包含上下文信息，SwiGLU 实际是在对上下文融合后的表示进行更精细的非线性加工。  
+{/KNOWLEDGE}
+
+本节小结：SwiGLU 相比普通 FFN 多了门控机制，能更灵活地控制中间特征的信息流。
+
+---
+
+## FFN 的维度变化
+
+{IMAGE:17}
+
+假设输入张量形状为：
+
+$$
+x \in \mathbb{R}^{B \times T \times d}
+$$
+
+对于 SwiGLU FFN：
+
+### gate projection
+
+$$
+g = xW_{gate}
+$$
+
+形状变化：
+
+$$
+[B, T, d] \rightarrow [B, T, d_{ff}]
+$$
+
+### up projection
+
+$$
+u = xW_{up}
+$$
+
+形状变化：
+
+$$
+[B, T, d] \rightarrow [B, T, d_{ff}]
+$$
+
+### 激活与门控
+
+$$
+h = \text{SiLU}(g) \otimes u
+$$
+
+形状保持：
+
+$$
+[B, T, d_{ff}]
+$$
+
+### down projection
+
+$$
+y = hW_{down}
+$$
+
+形状变化：
+
+$$
+[B, T, d_{ff}] \rightarrow [B, T, d]
+$$
+
+{IMAGE:18}
+
+所以完整过程是：
+
+$$
+[B,T,d]
+\rightarrow [B,T,d_{ff}]
+\rightarrow [B,T,d_{ff}]
+\rightarrow [B,T,d]
+$$
+
+在 Transformer Block 中，FFN 输出必须和输入 $x$ 形状一致，才能进行残差连接：
+
+$$
+x_{\text{out}} = x + \text{FFN}(\text{Norm}(x))
+$$
+
+{WARNING}  
+残差连接要求输入和输出形状相同。如果 FFN 最后一层没有降回 hidden size，就无法直接与原输入相加。  
+{/WARNING}
+
+本节小结：SwiGLU FFN 中 gate 和 up 分支都会升维到中间维度，逐元素相乘后再通过 down projection 降回 hidden size。
+
+---
+
+## MiniMind 中的 FFN 实现思路
+
+{IMAGE:19}
+
+在 MiniMind 这类从零实现大模型的项目中，FFN 通常会被封装成一个独立模块，并在 Transformer Block 中调用。
+
+一个简化版本如下：
 
 ```python
-class SwiGLUFFN(nn.Module):
-    """
-    SwiGLU FFN 实现
-    
-    SwiGLU(x) = Swish(xW1) ⊗ (xW2)
-    
-    相比标准 FFN，多了一个 W3 用于门控计算，
-    但可以在相同参数量下获得更好性能
-    
-    参考文献：Shengding Hu et al., "LLaMA: Open and Efficient Foundation Language Models"
-    """
-    def __init__(self, d_model: int, d_ff: int, dropout: float = 0.1):
-        super().__init__()
-        
-        # SwiGLU 需要三个线性层
-        # W1, W2: 标准 FFN 的两层
-        # W3: 额外的门控层（输出维度与 W1 相同）
-        self.w1 = nn.Linear(d_model, d_ff, bias=False)  # Swish 门控路径
-        self.w2 = nn.Linear(d_model, d_ff, bias=False)  # 主信号路径
-        self.w3 = nn.Linear(d_ff, d_model, bias=True)   # 输出投影
-        
-        self.dropout = nn.Dropout(dropout)
-        
-        # 可学习的 beta 参数（Swishβ = x * σ(βx)）
-        # 设为可训练参数，初始化为 1.0
-        self.beta = nn.Parameter(torch.tensor(1.0))
-        
-    def swish(self, x: torch.Tensor) -> torch.Tensor:
-        """Swish 激活函数：x * sigmoid(x)"""
-        return x * torch.sigmoid(self.beta * x)
-        
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Swish(xW1) ⊗ (xW2) @ W3
-        return self.dropout(self.w3(self.swish(self.w1(x)) * self.w2(x)))
-```
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-### 5.3 精简版 SwiGLU（推荐实现）
-
-```python
-class SwiGLUFFNV2(nn.Module):
-    """
-    精简版 SwiGLU FFN
-    
-    这是 LLaMA、Mistral 等模型实际使用的版本
-    特点：使用 SiLU（Swish-1 的别名）作为激活函数
-    """
-    def __init__(self, d_model: int, intermediate_size: int = None, dropout: float = 0.0):
+class MiniMindFFN(nn.Module):
+    def __init__(self, hidden_size, intermediate_size):
         super().__init__()
-        # LLaMA 的标准配置：intermediate_size = d_model * 4 / 3
-        # 然后向上取整到 128 的倍数
-        if intermediate_size is None:
-            intermediate_size = int((d_model * 4 + 2) / 3)
-            intermediate_size = ((intermediate_size + 127) // 128) * 128
-        
-        self.gate_proj = nn.Linear(d_model, intermediate_size, bias=False)  # W1
-        self.up_proj = nn.Linear(d_model, intermediate_size, bias=False)    # W2
-        self.down_proj = nn.Linear(intermediate_size, d_model, bias=False)   # W3
-        
-        self.dropout = nn.Dropout(dropout)
-        self.activation = nn.SiLU()  # SiLU = Swish = x * sigmoid(x)
-        
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        SwiGLU(x) = SiLU(gate_proj(x)) * up_proj(x) @ down_proj
-        """
-        return self.down_proj(
-            self.dropout(
-                self.activation(self.gate_proj(x)) * self.up_proj(x)
-            )
+
+        # 门控分支：决定哪些中间特征更重要
+        self.gate_proj = nn.Linear(
+            hidden_size,
+            intermediate_size,
+            bias=False
         )
+
+        # 升维分支：生成候选中间特征
+        self.up_proj = nn.Linear(
+            hidden_size,
+            intermediate_size,
+            bias=False
+        )
+
+        # 降维分支：映射回 hidden_size
+        self.down_proj = nn.Linear(
+            intermediate_size,
+            hidden_size,
+            bias=False
+        )
+
+    def forward(self, x):
+        # x: [batch_size, seq_len, hidden_size]
+
+        gate = F.silu(self.gate_proj(x))
+        up = self.up_proj(x)
+
+        # SwiGLU: gate 分支调制 up 分支
+        x = gate * up
+
+        # 输出形状恢复为 [batch_size, seq_len, hidden_size]
+        x = self.down_proj(x)
+
+        return x
 ```
 
-### 5.4 三种 FFN 的对比测试
+在 Transformer Block 中，它可能这样使用：
 
 ```python
-def test_ffn_comparison():
-    """测试三种 FFN 实现的输出维度一致性"""
-    batch_size, seq_len, d_model = 2, 10, 512
-    d_ff = 2048  # intermediate_size
-    
-    x = torch.randn(batch_size, seq_len, d_model)
-    
-    # 初始化三种 FFN
-    ffn_standard = StandardFFN(d_model, d_ff)
-    ffn_swiglu = SwiGLUFFN(d_model, d_ff)
-    ffn_swiglu_v2 = SwiGLUFFNV2(d_model, d_ff)
-    
-    # 前向传播
-    out1 = ffn_standard(x)
-    out2 = ffn_swiglu(x)
-    out3 = ffn_swiglu_v2(x)
-    
-    print(f"输入形状: {x.shape}")
-    print(f"Standard FFN 输出: {out1.shape}")
-    print(f"SwiGLU FFN 输出: {out2.shape}")
-    print(f"SwiGLU V2 输出: {out3.shape}")
-    
-    # 参数数量对比
-    print("\n参数量对比:")
-    print(f"Standard FFN: {sum(p.numel() for p in ffn_standard.parameters()):,}")
-    print(f"SwiGLU FFN: {sum(p.numel() for p in ffn_swiglu.parameters()):,}")
-    print(f"SwiGLU V2: {sum(p.numel() for p in ffn_swiglu_v2.parameters()):,}")
+class TransformerBlock(nn.Module):
+    def __init__(self, hidden_size, intermediate_size):
+        super().__init__()
 
-# test_ffn_comparison()
+        self.ffn_norm = nn.LayerNorm(hidden_size)
+        self.ffn = MiniMindFFN(hidden_size, intermediate_size)
+
+    def forward(self, x):
+        # Pre-Norm 结构：先归一化，再进入 FFN
+        residual = x
+        x = self.ffn_norm(x)
+        x = self.ffn(x)
+
+        # 残差连接
+        x = residual + x
+
+        return x
 ```
 
----
+{IMAGE:20}
 
-## 6. 参数效率分析
+实际大模型中常使用 RMSNorm 替代 LayerNorm，也可能会配合 dropout、模型并行、张量并行等优化。但核心 FFN 逻辑仍然是：
 
-$$参数总量 = 2 \times (d_{model} \times d_{ff}) + d_{model} + d_{ff} + d_{ff} + d_{model}$$
+$$
+\text{Norm} \rightarrow \text{SwiGLU FFN} \rightarrow \text{Residual}
+$$
 
-对于 $d_{model} = 512$, $d_{ff} = 2048$：
-
-| FFN 类型 | 参数量 | 相对比例 |
-|---------|--------|----------|
-| Standard | ~2.1M | 100% |
-| SwiGLU | ~2.1M | ~100% |
-
-{KNOWLEDGE}关键发现{/KNOWLEDGE}
-虽然 SwiGLU 多了 W3 层，但通过调整隐藏层维度 $d_{ff}$（如 LLaMA 的 $\frac{4}{3}d_{model}$），可以在**相同参数量**下获得更好的性能。
+本节小结：MiniMind 的 FFN 实现可以采用 LLaMA 风格的 SwiGLU 结构，代码上表现为 gate_proj、up_proj、down_proj 三个线性层。
 
 ---
 
-## 7. 本讲小结
+## 参数量与计算量理解
 
-{IMAGE:12}
+{IMAGE:21}
 
-| 知识点 | 要点回顾 |
-|--------|----------|
-| FFN 定位 | Transformer 中每个注意力层后的 MLP，占模型 2/3 参数 |
-| GELU 激活 | $x \cdot \Phi(x)$，平滑非饱和，适合大模型 |
-| Swish 激活 | $x \cdot \sigma(x)$，自门控可学习 |
-| GLU 机制 | 门控信号控制信息流动，类似 LSTM 但更简洁 |
-| SwiGLU | $\text{SiLU}(xW_1) \otimes (xW_2) @ W_3$，现代大模型标配 |
+假设 hidden size 为 $d$，intermediate size 为 $d_{ff}$。
 
-{IMPORTANT}核心公式{/IMPORTANT}
-$$\text{SwiGLU}(x) = \underbrace{\text{SiLU}(xW_1)}_{\text{门控}} \otimes \underbrace{(xW_2)}_{\text{信号}} \cdot W_3$$
+标准 FFN 参数量约为：
+
+$$
+d \times d_{ff} + d_{ff} \times d = 2dd_{ff}
+$$
+
+SwiGLU FFN 参数量约为：
+
+$$
+d \times d_{ff} + d \times d_{ff} + d_{ff} \times d = 3dd_{ff}
+$$
+
+因为 SwiGLU 有三个投影矩阵：
+
+- gate projection
+- up projection
+- down projection
+
+如果直接把 $d_{ff}$ 设为 $4d$，SwiGLU 的参数量会比普通 FFN 更大。因此有些模型会把 SwiGLU 的中间维度调整为约 $\frac{2}{3} \times 4d$，使总参数量接近传统 FFN。
+
+例如：
+
+$$
+d_{ff} \approx \frac{8}{3}d
+$$
+
+这样 SwiGLU 的参数量：
+
+$$
+3d \cdot \frac{8}{3}d = 8d^2
+$$
+
+普通 $4d$ FFN 参数量：
+
+$$
+2d \cdot 4d = 8d^2
+$$
+
+二者大致相当。
+
+{IMPORTANT}  
+SwiGLU 虽然多一个线性分支，但可以通过调整 intermediate size 控制总参数量，使其与传统 FFN 接近，同时获得更好的表达能力。  
+{/IMPORTANT}
+
+本节小结：SwiGLU 的参数量通常是 $3dd_{ff}$，实际模型会通过设置合适的中间维度来平衡性能和计算成本。
 
 ---
 
-## 8. 关键要点与思考题
+## 易错点总结
 
-### 关键要点
+### 1. FFN 不是卷积，也不是注意力
 
-1. **FFN 是 Transformer 的参数量担当**：理解 FFN 的设计对优化模型至关重要
+FFN 不负责 token 之间的信息交换。它对每个 token 位置独立应用同一组 MLP 参数。
 
-2. **SwiGLU 优于传统激活**：自门控机制让模型能动态控制每个特征的信息流动
+### 2. FFN 输出维度必须等于 hidden size
 
-3. **PyTorch 实现简洁**：使用 `nn.SiLU()` + 逐元素乘法即可实现 SwiGLU
+因为 Transformer Block 中需要做残差连接：
 
-4. **工程实践**：LLaMA、Mistral、Qwen 等主流开源模型均采用 SwiGLU
+$$
+x + \text{FFN}(x)
+$$
 
-### 思考题
+所以 FFN 的输出必须和输入形状一致。
 
-**思考题 1**：
-> SwiGLU 中的门控机制与 LSTM/GRU 中的门控有何异同？为什么说 SwiGLU 更适合 Transformer 架构？
+### 3. SwiGLU 不是单纯的 SiLU
 
-**提示**：考虑并行计算效率、信息流动方向、以及与自注意力机制的协同。
+SwiGLU 的核心不是只把激活函数换成 SiLU，而是引入了双分支门控：
 
-**思考题 2**：
-> 如果将 SwiGLU 中的 SiLU 替换为 ReLU 或 GELU，模型性能可能会如何变化？请从门控机制的角度分析。
+$$
+\text{SiLU}(W_{gate}x) \otimes W_{up}x
+$$
 
-**提示**：考虑门控信号的值域范围对信息流动的影响。
+### 4. gate 和 up 的输出形状必须一致
+
+因为二者需要逐元素相乘：
+
+$$
+[B,T,d_{ff}] \otimes [B,T,d_{ff}]
+$$
+
+如果维度不一致，会直接报 shape mismatch。
+
+本节小结：理解 FFN 时要抓住三个关键词：逐位置、升维降维、非线性门控。
 
 ---
 
-*下一讲预告*：我们将实现完整的 Transformer Encoder 层，将 FFN 与 Multi-Head Attention 进行整合。
+## 关键收获
+
+1. FFN 是 Transformer Block 的核心模块之一，负责对每个 token 的隐藏表示进行非线性加工。
+2. 标准 FFN 通常是 $d \rightarrow d_{ff} \rightarrow d$ 的两层 MLP。
+3. FFN 不混合 token 维度，token 间信息交互主要由 Attention 完成。
+4. 激活函数使 FFN 具备非线性表达能力。
+5. SwiGLU 使用 gate_proj 和 up_proj 两个分支，通过 $\text{SiLU}(gate) \times up$ 实现门控。
+6. SwiGLU FFN 通常包含三个线性层：gate_proj、up_proj、down_proj。
+7. FFN 最终输出必须回到 hidden size，才能与残差连接相加。
+
+{IMAGE:4}
+
+---
+
+## 思考题
+
+1. 为什么 Transformer 中已经有 Attention 了，还需要 FFN？
+2. 如果去掉 FFN 中的激活函数，只保留两层线性层，会发生什么？
+3. SwiGLU 相比普通 FFN 多了一个 gate 分支，它可能给模型表达能力带来哪些优势？

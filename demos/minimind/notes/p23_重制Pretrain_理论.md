@@ -1,635 +1,696 @@
 # 第23集: 重制Pretrain：理论
 
-# Lecture Notes: 重制Pretrain：理论
+## 课程定位：为什么重制 Pretrain 理论
 
-## 课程信息
+本集是 MiniMind 第 23/26 集，主题是“重制 Pretrain：理论”，重点围绕两个问题展开：
 
-| 项目 | 内容 |
-|------|------|
-| **课程** | MiniMind - PyTorch从零手敲大模型 |
-| **集数** | Episode 23/26 |
-| **时长** | 5分44秒 |
-| **主题** | 预训练目标、损失函数 |
-| **Episode Title** | Retraining Pretraining: Theory |
+1. 预训练到底让模型学什么？
+2. 训练时的损失函数如何把“预测下一个 token”变成可优化目标？
 
 {IMAGE:1}
 
----
+在大语言模型训练流程中，Pretrain 是最基础、最耗资源、也是最决定模型“语言能力底座”的阶段。它通常发生在 SFT、RLHF、DPO 等对齐阶段之前。预训练阶段并不要求模型学会“听话”，而是要求模型从海量文本中学习语言规律、知识分布、语法结构、上下文依赖和简单推理模式。
 
-## 课程概述
+{IMPORTANT}预训练的核心目标不是直接训练一个聊天助手，而是训练一个能够根据上下文预测后续文本的通用语言模型。{/IMPORTANT}
 
-本节课将深入探讨大语言模型预训练（Pre-training）阶段的核心理论与实现细节。我们将学习：
-
-1. **预训练的核心目标与任务设计**
-2. **损失函数的设计原理**
-3. **从理论到代码的完整实现**
-
-{IMPORTANT}预训练是大型语言模型成功的基础，它使模型能够学习通用的语言表示，为后续的微调阶段奠定坚实的基础。{/IMPORTANT}
+本节小结：Pretrain 是大模型能力的底座，主要目标是通过大量文本训练模型的 next token prediction 能力。
 
 ---
 
-## 第一节：预训练核心概念
+## 预训练目标：Next Token Prediction
 
-### 1.1 什么是预训练？
+### 自回归语言模型的基本任务
 
-预训练（Pre-training）是指在大规模无标注语料库上进行的自监督学习过程。模型通过预测被掩码或破坏的部分来学习语言规律。
+MiniMind 属于典型的 decoder-only 自回归语言模型。所谓自回归，就是模型在生成第 $t$ 个 token 时，只能看到它之前的 token：
 
-{KNOWLEDGE}预训练的核心思想源自迁移学习（Transfer Learning）：首先在通用任务上学习通用特征，然后在特定任务上进行微调。这一思想最早在计算机视觉领域提出，后来被自然语言处理领域广泛采用。{/KNOWLEDGE}
+$$
+P(x_1, x_2, ..., x_T) = \prod_{t=1}^{T} P(x_t \mid x_1, x_2, ..., x_{t-1})
+$$
 
-### 1.2 预训练 vs 微调
-
-| 特征 | 预训练（Pre-training） | 微调（Fine-tuning） |
-|------|------------------------|---------------------|
-| **数据规模** | 数十亿至万亿词元 | 数千至数万样本 |
-| **数据标注** | 无需人工标注（自监督） | 通常需要人工标注 |
-| **目标** | 学习通用语言表示 | 适配特定任务 |
-| **计算资源** | 巨大（需数百至数千GPU） | 较少（单卡即可） |
-| **训练时间** | 数天至数周 | 数分钟至数小时 |
-
-{IMAGE:2}
-
----
-
-## 第二节：预训练目标详解
-
-### 2.1 语言建模任务分类
-
-{LANGUAGE_MODELING_TAXONOMY}
-
-{IMAGE:3}
-
-预训练目标主要分为两大类：
-
-1. **自回归语言建模（Autoregressive LM / CLM）**
-2. **掩码语言建模（Masked Language Modeling / MLM）**
-
-### 2.2 自回归语言建模 (Causal LM)
-
-{IMAGE:4}
-
-自回归语言建模是GPT系列模型采用的核心训练目标。
-
-**核心思想**：给定前文上下文，预测下一个词元
-
-$$P(x_1, x_2, ..., x_n) = \prod_{i=1}^{n} P(x_i | x_1, x_2, ..., x_{i-1})$$
-
-**训练方式**：
-- 输入：词元序列 $[x_1, x_2, ..., x_{n-1}]$
-- 目标：预测 $[x_2, x_3, ..., x_n]$
-- 使用因果掩码（Causal Mask）确保只看前文
+也就是说，一整句话的概率可以拆解成每一步“根据前文预测当前 token”的条件概率乘积。
 
 {IMAGE:5}
 
-**因果掩码示意图**：
+例如文本序列为：
 
-```
-位置:     0    1    2    3    4
-输入:    [CLS]  我   爱   深   度
-注意力:  [1]   [1,1] [1,1,1] [1,1,1,1] [1,1,1,1,1]
-         ↑    ↑↑   ↑↑↑  ↑↑↑↑   ↑↑↑↑↑
-       只看  只看  只看  只看   全部
-       自己  之前  之前  之前   
+```text
+我 喜欢 学习 人工 智能
 ```
 
-{IMPORTANT}因果掩码确保模型在预测第$i$个词时，只能看到位置$0$到$i-1$的信息，不能"看到未来"。{/IMPORTANT}
+训练时模型并不是一次性预测整句话，而是构造如下监督信号：
 
-### 2.3 掩码语言建模 (MLM)
+```text
+输入: 我
+目标: 喜欢
+
+输入: 我 喜欢
+目标: 学习
+
+输入: 我 喜欢 学习
+目标: 人工
+
+输入: 我 喜欢 学习 人工
+目标: 智能
+```
+
+在实际代码中，为了提升效率，通常会把整个 token 序列并行送入模型，通过 causal mask 保证每个位置只能看到它左侧的信息。
+
+{KNOWLEDGE}虽然 Transformer 可以并行计算所有位置的 hidden states，但 decoder-only 模型会使用因果注意力掩码，禁止当前位置关注未来 token。{/KNOWLEDGE}
+
+本节小结：Pretrain 的训练目标是让模型在每个位置根据历史上下文预测下一个 token。
+
+---
+
+## 输入与标签的错位关系
+
+### shift by one
+
+预训练数据通常是一段连续 token 序列：
+
+$$
+x = [x_0, x_1, x_2, ..., x_{T-1}]
+$$
+
+模型输入通常是：
+
+$$
+[x_0, x_1, ..., x_{T-2}]
+$$
+
+标签则是：
+
+$$
+[x_1, x_2, ..., x_{T-1}]
+$$
+
+也就是输入和目标相差一个位置。
 
 {IMAGE:6}
 
-掩码语言建模是BERT系列模型采用的核心训练目标。
+这就是语言模型训练中常见的 shift 操作。模型在位置 $i$ 的输出 logits，要用来预测真实标签 $x_{i+1}$。
 
-**核心思想**：随机掩码部分词元，模型需要预测被掩码的词元
+```python
+# 假设 input_ids 是一个 batch 的 token 序列
+# shape: [batch_size, seq_len]
 
-**掩码策略**（以BERT为例）：
-- 80% 替换为 `[MASK]` 标记
-- 10% 替换为随机词元
-- 10% 保持不变
+inputs = input_ids[:, :-1]   # 去掉最后一个 token，作为输入
+targets = input_ids[:, 1:]   # 去掉第一个 token，作为预测目标
 
-$$L_{MLM} = -\sum_{i \in M} \log P(x_i | x_{\setminus M})$$
+# 模型输出 logits
+# logits shape: [batch_size, seq_len - 1, vocab_size]
+logits = model(inputs)
 
-其中 $M$ 是被掩码的位置集合。
+# 计算交叉熵损失
+loss = cross_entropy(logits, targets)
+```
+
+{WARNING}易错点：不是用当前位置预测当前位置，而是用当前位置的模型输出预测下一个 token。输入和标签必须正确错位。{/WARNING}
+
+本节小结：预训练标签来自原文本本身，通过输入与标签错位一位构造监督信号。
+
+---
+
+## 模型输出：Logits 与概率分布
+
+### vocab_size 维分类问题
+
+在每个位置，模型最终会输出一个长度为 `vocab_size` 的向量。这个向量称为 logits：
+
+$$
+z_t \in \mathbb{R}^{V}
+$$
+
+其中 $V$ 是词表大小。每一维对应一个 token 的未归一化分数。
 
 {IMAGE:7}
 
-**MLM vs CLM 对比**：
+例如词表中有：
 
-| 特性 | CLM（GPT） | MLM（BERT） |
-|------|------------|-------------|
-| **训练方式** | 单向 | 双向 |
-| **注意力** | 因果注意力 | 全注意力 |
-| **适合任务** | 生成任务 | 理解任务 |
-| **模型结构** | Decoder-only | Encoder-only |
-| **代表模型** | GPT-2, GPT-3 | BERT, RoBERTa |
+```text
+[我, 喜欢, 学习, 人工, 智能, 的, 是, ...]
+```
+
+当模型看到“我 喜欢”时，它可能对不同 token 给出不同分数：
+
+```text
+学习: 8.2
+吃饭: 4.1
+的: 1.7
+是: 0.5
+```
+
+logits 本身还不是概率，需要经过 softmax 转换。
+
+$$
+p_i = \frac{e^{z_i}}{\sum_{j=1}^{V} e^{z_j}}
+$$
+
+softmax 会把所有 token 的分数变成概率分布，并保证：
+
+$$
+\sum_{i=1}^{V} p_i = 1
+$$
 
 {IMAGE:8}
 
-### 2.4 Next Sentence Prediction (NSP)
+本节小结：模型每个位置输出 vocab_size 维 logits，经过 softmax 后表示下一个 token 的概率分布。
+
+---
+
+## 损失函数：交叉熵 Cross Entropy
+
+### 从概率最大化到损失最小化
+
+预训练希望模型给真实 token 分配尽可能高的概率。如果真实下一个 token 是“学习”，模型预测概率为：
+
+```text
+P(学习 | 我 喜欢) = 0.8
+```
+
+这说明模型预测较好；如果概率只有 0.01，则说明预测很差。
+
+训练目标可以写成最大化真实序列概率：
+
+$$
+\max_\theta \prod_{t=1}^{T} P_\theta(x_t \mid x_{<t})
+$$
+
+为了方便优化，通常取 log：
+
+$$
+\max_\theta \sum_{t=1}^{T} \log P_\theta(x_t \mid x_{<t})
+$$
+
+深度学习训练一般最小化 loss，所以变成负对数似然：
+
+$$
+\mathcal{L} = - \sum_{t=1}^{T} \log P_\theta(x_t \mid x_{<t})
+$$
+
+如果对 token 数取平均，就是常见的语言模型交叉熵损失：
+
+$$
+\mathcal{L} = - \frac{1}{T} \sum_{t=1}^{T} \log P_\theta(x_t \mid x_{<t})
+$$
 
 {IMAGE:9}
 
-NSP是BERT引入的辅助训练目标，用于学习句子级别的关系。
+{IMPORTANT}交叉熵损失本质上是在惩罚模型对正确 token 分配的概率太低。正确 token 的概率越高，loss 越小。{/IMPORTANT}
 
-**任务定义**：
-- 输入：句子A + [SEP] + 句子B
-- 目标：判断句子B是否是句子A的下一句
+本节小结：Pretrain 的 loss 通常是 next token prediction 上的交叉熵，也等价于负对数似然。
 
-**标签定义**：
-- `IsNext`：B确实是A的下一句
-- `NotNext`：B是随机选取的句子
+---
 
-**损失函数**：
-$$L_{NSP} = -[y \log \hat{y} + (1-y)\log(1-\hat{y})]$$
+## 单个位置的交叉熵计算
 
-{KNOWLEDGE}后续研究发现，NSP任务对模型性能提升有限，甚至可能带来负面影响。RoBERTa等模型在去掉NSP后取得了更好的效果。这可能是因为NSP任务过于简单，模型容易通过表层特征（如主题匹配）判断，而非真正理解句子关系。{/KNOWLEDGE}
+### one-hot 标签与预测分布
+
+假设词表大小为 5，真实 token 是第 2 类，标签可以写成 one-hot：
+
+$$
+y = [0, 0, 1, 0, 0]
+$$
+
+模型预测概率为：
+
+$$
+p = [0.05, 0.10, 0.80, 0.03, 0.02]
+$$
+
+交叉熵为：
+
+$$
+H(y, p) = - \sum_i y_i \log p_i
+$$
+
+由于 one-hot 中只有真实类别对应位置为 1，所以公式简化为：
+
+$$
+H(y, p) = -\log p_{\text{target}}
+$$
+
+也就是：
+
+$$
+-\log(0.80)
+$$
+
+如果模型只给真实 token 0.01 的概率：
+
+$$
+-\log(0.01)
+$$
+
+损失会明显变大。
 
 {IMAGE:10}
 
+```python
+import torch
+import torch.nn.functional as F
+
+# 单个位置的 logits，假设 vocab_size = 5
+logits = torch.tensor([[1.0, 2.0, 4.0, 0.5, 0.1]])
+
+# 真实类别索引，表示第 2 号 token 是正确答案
+target = torch.tensor([2])
+
+# PyTorch 的 cross_entropy 内部会自动做 log_softmax + NLLLoss
+loss = F.cross_entropy(logits, target)
+
+print(loss)
+```
+
+{WARNING}易错点：`F.cross_entropy` 的输入应该是 logits，而不是 softmax 之后的概率。PyTorch 会在内部处理 softmax 相关计算。{/WARNING}
+
+本节小结：单个 token 的交叉熵就是正确 token 预测概率的负对数。
+
 ---
 
-## 第三节：损失函数详解
+## Batch 与序列维度上的损失计算
 
-### 3.1 交叉熵损失函数
+### 从二维分类扩展到三维语言模型输出
+
+语言模型输出通常是三维张量：
+
+$$
+\text{logits shape} = [B, T, V]
+$$
+
+其中：
+
+- $B$：batch size
+- $T$：sequence length
+- $V$：vocab size
+
+标签通常是：
+
+$$
+\text{targets shape} = [B, T]
+$$
+
+每个 batch、每个时间位置都有一个正确 token id。
 
 {IMAGE:11}
 
-对于语言建模任务，最常用的损失函数是**交叉熵损失（Cross-Entropy Loss）**。
+PyTorch 的 `cross_entropy` 通常要求分类维度在第二维，因此语言模型训练中常见两种写法。
 
-**数学定义**：
-
-对于单个样本：
-$$L_{CE} = -\sum_{c=1}^{C} y_c \log(\hat{y}_c)$$
-
-其中：
-- $C$ 是类别总数（词表大小）
-- $y_c$ 是真实标签（one-hot编码）
-- $\hat{y}_c$ 是预测概率
-
-**对于语言模型**：
-$$L_{LM} = -\frac{1}{T}\sum_{t=1}^{T} \log P(x_t | x_{<t}; \theta)$$
-
-{IMAGE:12}
-
-### 3.2 损失函数的实现
+写法一：展平 batch 和 seq 维度：
 
 ```python
-import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
-class LanguageModelLoss(nn.Module):
-    """
-    语言模型损失计算器
-    支持 CLM 和 MLM 两种训练目标
-    """
-    
-    def __init__(self, ignore_index=-100):
-        super().__init__()
-        self.ignore_index = ignore_index
-        self.loss_fn = nn.CrossEntropyLoss(ignore_index=ignore_index)
-    
-    def forward_clm(self, logits, labels):
-        """
-        自回归语言建模损失 (用于GPT类模型)
-        
-        Args:
-            logits: [batch_size, seq_len, vocab_size]
-            labels: [batch_size, seq_len] - 目标词元ID
-        
-        Returns:
-            loss: 标量张量
-        """
-        # 位移处理：labels是下一个词元的ID
-        # logits[:, :-1] 预测第1到T-1个位置的下一个词
-        # labels[:, 1:] 是第2到T个词元
-        shift_logits = logits[:, :-1, :].contiguous()
-        shift_labels = labels[:, 1:].contiguous()
-        
-        # 计算交叉熵损失
-        loss = self.loss_fn(
-            shift_logits.view(-1, shift_logits.size(-1)),
-            shift_labels.view(-1)
-        )
-        
-        return loss
-    
-    def forward_mlm(self, logits, labels):
-        """
-        掩码语言建模损失 (用于BERT类模型)
-        
-        Args:
-            logits: [batch_size, seq_len, vocab_size]
-            labels: [batch_size, seq_len] - 目标词元ID
-                   被掩码位置为真实词元ID，未掩码位置为ignore_index
-        
-        Returns:
-            loss: 标量张量
-        """
-        loss = self.loss_fn(
-            logits.view(-1, logits.size(-1)),
-            labels.view(-1)
-        )
-        return loss
-    
-    def forward_combined(self, lm_logits, nsp_logits, lm_labels, nsp_labels):
-        """
-        组合损失 (BERT原始训练)
-        
-        Args:
-            lm_logits: 语言模型logits
-            nsp_logits: NSP预测logits
-            lm_labels: 语言模型标签
-            nsp_labels: NSP标签
-        
-        Returns:
-            total_loss: 加权组合损失
-        """
-        # 语言模型损失
-        lm_loss = self.forward_mlm(lm_logits, lm_labels)
-        
-        # NSP损失
-        nsp_loss = F.cross_entropy(
-            nsp_logits, 
-            nsp_labels
-        )
-        
-        # 组合权重 (BERT原论文: λ=1)
-        total_loss = lm_loss + nsp_loss
-        
-        return total_loss
+# logits: [batch_size, seq_len, vocab_size]
+# targets: [batch_size, seq_len]
+
+B, T, V = logits.shape
+
+loss = F.cross_entropy(
+    logits.reshape(B * T, V),     # [B*T, V]
+    targets.reshape(B * T)        # [B*T]
+)
 ```
 
-{WARNING}在计算CLM损失时，logits和labels必须进行位移（shift）处理。labels的第0个位置在损失计算中不使用，因为我们没有"之前的词"来预测它。{/WARNING}
-
-### 3.3 训练过程中的损失监控
+写法二：调换维度：
 
 ```python
-class LossMonitor:
-    """训练损失监控器"""
-    
-    def __init__(self):
-        self.history = {
-            'total_loss': [],
-            'lm_loss': [],
-            'ppl': [],  # Perplexity 困惑度
-        }
-    
-    @staticmethod
-    def compute_perplexity(loss):
-        """
-        计算困惑度 (Perplexity)
-        困惑度越低，模型预测越准确
-        
-        PPL = exp(loss)
-        """
-        return torch.exp(loss).item()
-    
-    def update(self, total_loss, lm_loss=None):
-        """更新损失记录"""
-        self.history['total_loss'].append(total_loss.item())
-        if lm_loss is not None:
-            self.history['lm_loss'].append(lm_loss.item())
-        self.history['ppl'].append(self.compute_perplexity(total_loss))
+# logits: [B, T, V] -> [B, V, T]
+loss = F.cross_entropy(
+    logits.transpose(1, 2),
+    targets
+)
 ```
+
+在 MiniMind 这类从零实现项目中，第一种展平写法更直观，方便理解每个 token 位置都是一个分类任务。
+
+本节小结：语言模型损失是在 batch 内所有 token 位置上计算交叉熵并取平均。
 
 ---
 
-## 第四节：完整训练循环实现
+## Causal Mask 与“不能偷看答案”
 
-### 4.1 数据准备
+### 为什么需要 mask
+
+Transformer 的 self-attention 默认每个 token 都可以看到序列中所有 token。如果不加限制，模型在训练时可能直接看到未来 token，相当于考试时偷看答案。
+
+{IMAGE:12}
+
+例如输入：
+
+```text
+我 喜欢 学习 人工 智能
+```
+
+如果位置“喜欢”能够看到后面的“学习”，那么它预测“学习”就没有意义了。训练出来的模型在推理时没有未来信息，效果会崩掉。
+
+因此 decoder-only 模型必须使用 causal mask：
+
+$$
+M_{ij} =
+\begin{cases}
+0, & j \le i \\
+-\infty, & j > i
+\end{cases}
+$$
+
+含义是：
+
+- 当前位置可以看自己和过去位置
+- 当前位置不能看未来位置
+- 被 mask 的位置在 softmax 后概率接近 0
 
 {IMAGE:13}
 
 ```python
-from torch.utils.data import Dataset, DataLoader
-from transformers import GPT2Tokenizer
+import torch
 
-class PretrainDataset(Dataset):
-    """
-    预训练数据集
-    """
-    
-    def __init__(self, data_path, tokenizer, max_length=512):
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-        
-        # 加载原始文本数据
-        with open(data_path, 'r', encoding='utf-8') as f:
-            self.texts = [line.strip() for line in f if line.strip()]
-    
-    def __len__(self):
-        return len(self.texts)
-    
-    def __getitem__(self, idx):
-        # 对文本进行分词
-        encoding = self.tokenizer(
-            self.texts[idx],
-            max_length=self.max_length,
-            padding='max_length',
-            truncation=True,
-            return_tensors='pt'
-        )
-        
-        input_ids = encoding['input_ids'].squeeze(0)
-        attention_mask = encoding['attention_mask'].squeeze(0)
-        
-        # 对于CLM，输入和目标相同（位移后）
-        # 目标 = 输入位移一位
-        return {
-            'input_ids': input_ids,
-            'attention_mask': attention_mask,
-            'labels': input_ids.clone()  # CLM使用相同序列作为labels
-        }
+seq_len = 5
+
+# 上三角为 True，表示未来位置需要被屏蔽
+mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
+
+print(mask)
 ```
 
-### 4.2 训练步骤
-
-```python
-def training_step(model, batch, criterion, optimizer, device):
-    """
-    单步训练
-    
-    Args:
-        model: 语言模型
-        batch: 包含input_ids, attention_mask, labels的字典
-        criterion: 损失函数
-        optimizer: 优化器
-        device: 计算设备
-    
-    Returns:
-        loss: 本步损失值
-    """
-    # 将数据移动到设备
-    input_ids = batch['input_ids'].to(device)
-    attention_mask = batch['attention_mask'].to(device)
-    labels = batch['labels'].to(device)
-    
-    # 前向传播
-    outputs = model(
-        input_ids=input_ids,
-        attention_mask=attention_mask
-    )
-    
-    # 计算损失
-    loss = criterion.forward_clm(outputs.logits, labels)
-    
-    # 反向传播
-    optimizer.zero_grad()
-    loss.backward()
-    
-    # 梯度裁剪（防止梯度爆炸）
-    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-    
-    # 更新参数
-    optimizer.step()
-    
-    return loss
-
-def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
-    """训练一个epoch"""
-    model.train()
-    total_loss = 0
-    
-    for batch_idx, batch in enumerate(dataloader):
-        loss = training_step(model, batch, criterion, optimizer, device)
-        total_loss += loss.item()
-        
-        # 定期打印进度
-        if batch_idx % 100 == 0:
-            perplexity = LossMonitor.compute_perplexity(loss)
-            print(f"Epoch {epoch} | Batch {batch_idx}/{len(dataloader)} | "
-                  f"Loss: {loss.item():.4f} | PPL: {perplexity:.2f}")
-    
-    avg_loss = total_loss / len(dataloader)
-    return avg_loss
-```
-
-### 4.3 完整训练脚本
-
-```python
-def main_train(
-    model,
-    train_dataset,
-    output_dir='./checkpoint',
-    epochs=10,
-    batch_size=8,
-    learning_rate=1e-4,
-    warmup_steps=1000,
-    save_steps=5000,
-):
-    """完整的预训练流程"""
-    
-    # 设备配置
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = model.to(device)
-    
-    # 数据加载器
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=4,
-        pin_memory=True
-    )
-    
-    # 损失函数和优化器
-    criterion = LanguageModelLoss(ignore_index=0)  # 0通常是padding
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=learning_rate,
-        betas=(0.9, 0.999),
-        weight_decay=0.01
-    )
-    
-    # 学习率调度器
-    total_steps = len(train_loader) * epochs
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer,
-        max_lr=learning_rate,
-        total_steps=total_steps,
-        pct_start=0.1  # 10% warmup
-    )
-    
-    # 训练循环
-    global_step = 0
-    for epoch in range(epochs):
-        model.train()
-        epoch_loss = 0
-        
-        for batch in train_loader:
-            # 训练步骤
-            loss = training_step(model, batch, criterion, optimizer, device)
-            
-            # 更新学习率
-            scheduler.step()
-            
-            epoch_loss += loss.item()
-            global_step += 1
-            
-            # 定期保存检查点
-            if global_step % save_steps == 0:
-                save_checkpoint(model, optimizer, scheduler, 
-                               global_step, output_dir)
-        
-        # Epoch结束，打印统计信息
-        avg_loss = epoch_loss / len(train_loader)
-        print(f"\nEpoch {epoch+1}/{epochs} 完成:")
-        print(f"  平均损失: {avg_loss:.4f}")
-        print(f"  困惑度: {LossMonitor.compute_perplexity(torch.tensor(avg_loss)):.2f}")
-        print(f"  当前学习率: {scheduler.get_last_lr()[0]:.2e}\n")
-    
-    # 保存最终模型
-    save_checkpoint(model, optimizer, scheduler, global_step, output_dir, 
-                   final=True)
-    print("训练完成!")
-
-def save_checkpoint(model, optimizer, scheduler, step, output_dir, final=False):
-    """保存模型检查点"""
-    suffix = 'final' if final else f'step_{step}'
-    save_path = f"{output_dir}/{suffix}"
-    
-    os.makedirs(save_path, exist_ok=True)
-    
-    torch.save({
-        'step': step,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict(),
-    }, f"{save_path}/checkpoint.pt")
-    
-    # 保存模型配置
-    model.config.to_json_file(f"{save_path}/config.json")
-    
-    print(f"检查点已保存: {save_path}")
-```
+本节小结：Causal mask 保证 next token prediction 的训练条件与推理条件一致。
 
 ---
 
-## 第五节：训练策略与技巧
+## 预训练数据：文本如何变成 token
 
-### 5.1 学习率调度
+### tokenizer 的作用
+
+模型不能直接处理汉字、英文单词或字符串。文本需要先经过 tokenizer 转换成 token id。
 
 {IMAGE:14}
 
-**常见的学习率调度策略**：
+流程如下：
 
-1. **Linear Warmup + Cosine Decay**
-2. **OneCycleLR**
-3. **Constant with Warmup**
-
-```python
-# 推荐配置
-config = {
-    'learning_rate': 1e-4,      # 基础学习率
-    'warmup_ratio': 0.1,         # 10%的步数用于warmup
-    'min_lr_ratio': 0.1,         # 最大学习率的10%
-    'weight_decay': 0.01,        # 权重衰减
-}
+```text
+原始文本 -> tokenizer -> token ids -> embedding -> Transformer -> logits
 ```
 
-### 5.2 梯度处理
-
-{WARNING}梯度问题是预训练中的常见陷阱：**
-1. **梯度消失**：模型无法学习深层表示
-2. **梯度爆炸**：训练不稳定，loss发散
-3. **解决方案**：梯度裁剪（clip_grad_norm）+ 合适的权重初始化
-{/WARNING}
+例如：
 
 ```python
-# 梯度裁剪示例
-torch.nn.utils.clip_grad_norm_(
-    model.parameters(),
-    max_norm=1.0,  # 梯度范数上限
-    norm_type=2    # L2范数
-)
+text = "我喜欢学习人工智能"
+
+# 示例：实际 token id 由具体 tokenizer 决定
+input_ids = tokenizer.encode(text)
+
+print(input_ids)
 ```
 
-### 5.3 混合精度训练
+在预训练阶段，数据通常不是一问一答格式，而是大量自然文本、代码、百科、网页、书籍等内容。模型通过这些文本学习语言统计规律。
 
-```python
-from torch.cuda.amp import autocast, GradScaler
+{KNOWLEDGE}预训练数据质量会显著影响模型能力。高质量、去重、低噪声、多样化的数据通常比单纯堆数量更重要。{/KNOWLEDGE}
 
-scaler = GradScaler()
-
-def training_step_fp16(model, batch, criterion, optimizer, device):
-    """使用混合精度加速训练"""
-    input_ids = batch['input_ids'].to(device)
-    labels = batch['labels'].to(device)
-    
-    optimizer.zero_grad()
-    
-    # 前向传播使用FP16
-    with autocast():
-        outputs = model(input_ids)
-        loss = criterion.forward_clm(outputs.logits, labels)
-    
-    # 反向传播使用FP32
-    scaler.scale(loss).backward()
-    
-    # 梯度裁剪
-    scaler.unscale_(optimizer)
-    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-    
-    # 参数更新
-    scaler.step(optimizer)
-    scaler.update()
-    
-    return loss
-```
+本节小结：文本需要先被 tokenizer 编码成 token id，预训练数据一般是大规模连续文本。
 
 ---
 
-## 章节小结
+## Perplexity：语言模型损失的直观指标
+
+### 从 loss 到困惑度
+
+交叉熵 loss 虽然可优化，但不够直观。语言模型中常用 perplexity，中文常译为“困惑度”。
+
+如果平均交叉熵为：
+
+$$
+\mathcal{L}
+$$
+
+则困惑度为：
+
+$$
+\text{PPL} = e^{\mathcal{L}}
+$$
+
+直观理解：PPL 越低，说明模型对下一个 token 越不困惑，预测越确定。
 
 {IMAGE:15}
 
-### 本节核心要点
+例如：
 
-1. **预训练目标**：
-   - 自回归语言建模（CLM）：GPT系列，适合生成任务
-   - 掩码语言建模（MLM）：BERT系列，适合理解任务
-   - NSP辅助任务：学习句子间关系
+$$
+\mathcal{L} = 2.0
+$$
 
-2. **损失函数**：
-   - 交叉熵损失是语言建模的标准损失
-   - 困惑度（Perplexity）是评估语言模型的核心指标
-   - $PPL = e^{L}$，越低越好
+则：
 
-3. **实现要点**：
-   - CLM需要对logits和labels进行位移处理
-   - MLM需要正确设置mask位置
-   - 梯度裁剪和学习率调度对训练稳定性至关重要
+$$
+\text{PPL} = e^2 \approx 7.39
+$$
 
-4. **训练技巧**：
-   - 混合精度训练可大幅加速
-   - 检查点保存防止训练中断
-   - 损失监控便于调试
+可以粗略理解为模型平均每一步像是在约 7 个候选 token 中犹豫。
+
+{WARNING}PPL 只能在相同 tokenizer、相似数据分布、相同评估方式下比较。不同词表或不同数据集上的 PPL 不宜直接比较。{/WARNING}
+
+本节小结：PPL 是交叉熵 loss 的指数形式，常用于评估语言模型预测能力。
+
+---
+
+## Pretrain 与 SFT 的区别
+
+### 数据形式不同
+
+预训练数据通常是普通文本：
+
+```text
+大语言模型是一种基于深度学习的生成式模型……
+```
+
+SFT 数据通常是指令格式：
+
+```text
+用户：请解释什么是交叉熵。
+助手：交叉熵是一种衡量两个概率分布差异的损失函数……
+```
+
+{IMAGE:16}
+
+### 训练目标相似但侧重点不同
+
+Pretrain 和 SFT 本质上都可以使用 next token prediction 和交叉熵损失，但它们的目的不同：
+
+- Pretrain：学习通用语言建模能力和世界知识
+- SFT：学习按照指令、对话格式和人类偏好输出
+- Pretrain 数据规模通常更大
+- SFT 数据质量和格式更关键
+
+有些 SFT 训练会只对 assistant 部分计算 loss，而不对 user prompt 部分计算 loss。这可以通过 label mask 实现，把不需要计算 loss 的位置标记为 `ignore_index`。
+
+```python
+# targets 中不参与 loss 的位置设为 -100
+# PyTorch cross_entropy 默认 ignore_index=-100
+loss = F.cross_entropy(
+    logits.reshape(-1, vocab_size),
+    targets.reshape(-1),
+    ignore_index=-100
+)
+```
+
+本节小结：Pretrain 和 SFT 都可用交叉熵，但 Pretrain 学基础能力，SFT 学指令跟随与对话风格。
+
+---
+
+## MiniMind 中的训练逻辑抽象
+
+### 一个最小训练步骤
+
+{IMAGE:17}
+
+一个典型的预训练 step 可以抽象为：
+
+```python
+import torch
+import torch.nn.functional as F
+
+def pretrain_step(model, input_ids, optimizer):
+    """
+    input_ids: [batch_size, seq_len]
+    """
+    # 1. 构造输入和标签
+    x = input_ids[:, :-1]      # [B, T-1]
+    y = input_ids[:, 1:]       # [B, T-1]
+
+    # 2. 前向传播
+    logits = model(x)          # [B, T-1, vocab_size]
+
+    # 3. 计算交叉熵损失
+    B, T, V = logits.shape
+    loss = F.cross_entropy(
+        logits.reshape(B * T, V),
+        y.reshape(B * T)
+    )
+
+    # 4. 反向传播与参数更新
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+    return loss.item()
+```
+
+这个训练步骤背后的数学含义是：
+
+$$
+\theta \leftarrow \theta - \eta \nabla_\theta \mathcal{L}
+$$
+
+其中：
+
+- $\theta$ 是模型参数
+- $\eta$ 是学习率
+- $\mathcal{L}$ 是交叉熵损失
+- $\nabla_\theta \mathcal{L}$ 是损失对参数的梯度
+
+{IMAGE:18}
+
+本节小结：MiniMind 的预训练实现可以理解为“错位构造标签、前向算 logits、交叉熵算 loss、反向更新参数”。
+
+---
+
+## 为什么 loss 会下降
+
+### 梯度优化的直观理解
+
+训练初期，模型参数随机初始化，对下一个 token 的预测接近随机。若词表大小为 $V$，随机预测时真实 token 的概率大约是：
+
+$$
+\frac{1}{V}
+$$
+
+此时 loss 大约为：
+
+$$
+-\log \frac{1}{V} = \log V
+$$
+
+随着训练进行，模型逐渐学习到上下文规律。例如看到“人工”后，预测“智能”的概率会提高；看到“机器”后，预测“学习”的概率也会提高。
+
+{IMAGE:19}
+
+当真实 token 概率提高时：
+
+$$
+P_\theta(x_t \mid x_{<t}) \uparrow
+$$
+
+对应损失下降：
+
+$$
+-\log P_\theta(x_t \mid x_{<t}) \downarrow
+$$
+
+这就是预训练 loss 下降的本质。
+
+本节小结：loss 下降意味着模型给真实下一个 token 分配了更高概率。
+
+---
+
+## 常见实现细节与坑点
+
+### logits、labels 的 shape
+
+{IMAGE:20}
+
+语言模型训练中最常见错误之一是 shape 不匹配。应确认：
+
+```text
+logits: [B, T, V]
+labels: [B, T]
+```
+
+展平后：
+
+```text
+logits: [B*T, V]
+labels: [B*T]
+```
+
+### labels 的 dtype
+
+`cross_entropy` 要求 labels 是类别索引，通常为 `torch.long`，不是 one-hot，也不是 float。
+
+```python
+targets = targets.long()
+```
+
+### 不要重复 softmax
+
+错误写法：
+
+```python
+probs = torch.softmax(logits, dim=-1)
+loss = F.cross_entropy(probs, targets)
+```
+
+正确写法：
+
+```python
+loss = F.cross_entropy(logits, targets)
+```
+
+### 注意 pad token
+
+如果 batch 中存在 padding，需要避免 pad 位置参与 loss：
+
+```python
+loss = F.cross_entropy(
+    logits.reshape(-1, vocab_size),
+    targets.reshape(-1),
+    ignore_index=pad_token_id
+)
+```
+
+或者将 pad 标签替换成 `-100`：
+
+```python
+targets[targets == pad_token_id] = -100
+```
+
+{WARNING}如果 padding token 参与 loss，模型可能会错误地学习预测大量 padding，从而污染训练信号。{/WARNING}
+
+本节小结：预训练实现中最重要的工程细节是 shift、shape、dtype、ignore_index 和不要手动 softmax 后再交叉熵。
+
+---
+
+## 从理论到本集结尾
+
+{IMAGE:21}
+
+本集最后回到重制 Pretrain 的理论主线：我们并不是神秘地“喂数据让模型变聪明”，而是在做一个极其明确的监督学习任务：
+
+$$
+\text{给定前文，预测下一个 token}
+$$
+
+模型输出的是整个词表上的概率分布；真实答案来自原始文本向右平移一位；损失函数是交叉熵；训练过程通过反向传播不断提高真实 token 的预测概率。
+
+{IMAGE:3}
+
+{IMAGE:4}
+
+本节小结：Pretrain 理论可以被压缩为一个闭环：文本 token 化、错位构造标签、自回归预测、交叉熵优化、梯度下降更新。
+
+---
+
+## Key Takeaways
+
+1. 预训练的核心任务是 next token prediction，即根据历史上下文预测下一个 token。
+2. Decoder-only 模型必须使用 causal mask，避免训练时看到未来信息。
+3. 模型每个位置输出 vocab_size 维 logits，表示对所有 token 的打分。
+4. 交叉熵损失等价于真实 token 概率的负对数，真实 token 概率越高，loss 越低。
+5. PyTorch 中 `F.cross_entropy` 输入应为 logits，不需要提前 softmax。
+6. 语言模型训练时需要特别注意输入和标签 shift、张量 shape、padding mask 与 `ignore_index`。
+7. Pretrain 和 SFT 都可能使用交叉熵，但 Pretrain 学语言基础能力，SFT 学指令跟随和对话格式。
 
 ---
 
 ## 思考题
 
-### 思考题 1
-
-> **为什么GPT系列模型使用因果掩码（Causal Mask）而不是双向注意力？**
-
-*提示：考虑生成任务的特性和训练目标*
-
-### 思考题 2
-
-> **如果训练过程中发现困惑度（PPL）突然飙升，可能的原因有哪些？如何排查和解决？**
-
-*提示：考虑学习率、梯度、数据处理等方面*
-
----
-
-## 参考资料
-
-1. Radford, A. et al. "Improving Language Understanding by Generative Pre-Training" (GPT, 2018)
-2. Radford, A. et al. "Language Models are Unsupervised Multitask Learners" (GPT-2, 2019)
-3. Devlin, J. et al. "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding" (BERT, 2018)
-4. Liu, Y. et al. "RoBERTa: A Robustly Optimized BERT Pretraining Approach" (2019)
-
----
-
-*Notes generated for MiniMind Course - Episode 23*
+1. 如果训练 decoder-only 模型时不加 causal mask，会导致什么训练-推理不一致问题？
+2. 为什么 `F.cross_entropy` 要输入 logits，而不是 softmax 后的概率？
+3. 在 SFT 中，为什么有时只对 assistant 回复部分计算 loss，而不对 user prompt 计算 loss？
